@@ -11,6 +11,7 @@ from matplotlib.dates import DateFormatter, HourLocator, DayLocator
 from datetime import datetime, timedelta
 import argparse
 import sys
+import os
 from math import radians, cos, sin, asin, sqrt
 
 
@@ -102,7 +103,7 @@ def create_gantt_chart(schedule_df, avg_speed_kmh=60, output_file='schedule_gant
 
             # Add load label
             bar_center = load['pickup_date'] + load_duration / 2
-            load_label = f"${load['revenue']:,.0f}"
+            load_label = f"SAR {load['revenue']:,.0f}"
             ax.text(bar_center, y_position, load_label,
                    ha='center', va='center', fontsize=7, fontweight='bold',
                    color='white')
@@ -139,7 +140,7 @@ def create_gantt_chart(schedule_df, avg_speed_kmh=60, output_file='schedule_gant
     # Add statistics box
     total_loads = len(schedule_df)
     total_revenue = schedule_df['revenue'].sum()
-    stats_text = f'Total Loads: {total_loads}\nTotal Revenue: ${total_revenue:,.2f}'
+    stats_text = f'Total Loads: {total_loads}\nTotal Revenue: SAR {total_revenue:,.2f}'
     ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
            fontsize=10, verticalalignment='top',
            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
@@ -148,6 +149,7 @@ def create_gantt_chart(schedule_df, avg_speed_kmh=60, output_file='schedule_gant
     plt.tight_layout()
 
     # Save figure
+    os.makedirs(os.path.dirname(output_file) or '.', exist_ok=True)
     plt.savefig(output_file, dpi=dpi, bbox_inches='tight')
     print(f"\nVisualization saved to: {output_file}")
 
@@ -224,7 +226,7 @@ def create_detailed_timeline(schedule_df, avg_speed_kmh=60, output_file='schedul
                 # Add detailed load label
                 bar_center = load['pickup_date'] + load_duration / 2
                 duration_days = load['duration_hours'] / 24
-                load_label = f"${load['revenue']:,.0f}\n{duration_days:.1f}d"
+                load_label = f"SAR {load['revenue']:,.0f}\n{duration_days:.1f}d"
                 ax.text(bar_center, y_position, load_label,
                        ha='center', va='center', fontsize=6, fontweight='bold')
 
@@ -235,7 +237,7 @@ def create_detailed_timeline(schedule_df, avg_speed_kmh=60, output_file='schedul
             # Add vehicle statistics on the right
             vehicle_revenue = vehicle_loads['revenue'].sum()
             vehicle_load_count = len(vehicle_loads)
-            ax.text(1.01, y_position, f'{vehicle_load_count} loads | ${vehicle_revenue:,.0f}',
+            ax.text(1.01, y_position, f'{vehicle_load_count} loads | SAR {vehicle_revenue:,.0f}',
                    transform=ax.get_yaxis_transform(), fontsize=8, va='center')
 
         # Formatting
@@ -271,6 +273,7 @@ def create_detailed_timeline(schedule_df, avg_speed_kmh=60, output_file='schedul
         else:
             save_path = output_file
 
+        os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
         plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
         print(f"Timeline visualization saved to: {save_path}")
 
@@ -287,12 +290,12 @@ def print_schedule_summary(schedule_df):
         vehicle_loads = schedule_df[schedule_df['vehicle_id'] == vehicle_id].sort_values('load_sequence')
         total_revenue = vehicle_loads['revenue'].sum()
 
-        print(f"\nVehicle {vehicle_id} - {len(vehicle_loads)} loads, ${total_revenue:,.2f} revenue")
+        print(f"\nVehicle {vehicle_id} - {len(vehicle_loads)} loads, SAR {total_revenue:,.2f} revenue")
         print("-" * 80)
 
         for _, load in vehicle_loads.iterrows():
             print(f"  {load['load_sequence']}. {load['entity'][:30]:30} | "
-                  f"${load['revenue']:>8,.2f} | "
+                  f"SAR {load['revenue']:>8,.2f} | "
                   f"{load['pickup_date'].strftime('%b %d %H:%M')} → "
                   f"{load['dropoff_date'].strftime('%b %d %H:%M')}")
 
@@ -311,8 +314,8 @@ def main():
     )
     parser.add_argument(
         '--output',
-        default='schedule_gantt.png',
-        help='Output image file (default: schedule_gantt.png)'
+        default='visualizations/schedule_gantt.png',
+        help='Output image file (default: visualizations/schedule_gantt.png)'
     )
     parser.add_argument(
         '--speed',

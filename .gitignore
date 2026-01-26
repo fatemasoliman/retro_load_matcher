@@ -1,16 +1,14 @@
 # Data files
 loads.csv
 *_loads.csv
+actual.csv
 
 # Output files
-schedule_output.csv
-*_schedule.csv
-*_output.csv
+schedules/
+monthly_summary.csv
 
 # Visualization files
-*.png
-*.jpg
-*.jpeg
+visualizations/
 
 # Python
 venv/

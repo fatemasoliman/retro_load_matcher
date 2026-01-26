@@ -7,7 +7,8 @@
       "Bash(pip install:*)",
       "Bash(python schedule_loads.py:*)",
       "Bash(chmod:*)",
-      "Bash(./run_scheduler.sh:*)"
+      "Bash(./run_scheduler.sh:*)",
+      "Bash(./compare.sh:*)"
     ],
     "deny": [],
     "ask": []

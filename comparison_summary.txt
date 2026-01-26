@@ -1,0 +1,28 @@
+DEADMILE MINIMIZATION COMPARISON (50 vehicles, 60 km/h)
+
+Previous Run vs New Run with Deadmile Minimization (weight=0.3)
+
+Month            | Unloaded KM Before | Unloaded KM After | Reduction | Loaded Ratio Before | Loaded Ratio After | Improvement
+---------------- | ------------------ | ----------------- | --------- | ------------------- | ------------------ | -----------
+April 2025       | 180,531 km        | 161,017 km       | -19,514   | 67.6%              | 69.3%             | +1.7%
+August 2025      | 131,898 km        | 114,466 km       | -17,432   | 81.2%              | 83.3%             | +2.1%
+December 2025    | 130,509 km        | 107,038 km       | -23,471   | 81.7%              | 84.3%             | +2.6%
+February 2025    | 158,884 km        | 113,836 km       | -45,048   | 66.3%              | 74.2%             | +7.9%
+January 2025     | 135,667 km        | 114,643 km       | -21,024   | 78.3%              | 81.3%             | +3.0%
+January 2026     | 150,702 km        | 100,970 km       | -49,732   | 76.7%              | 82.8%             | +6.1%
+July 2025        | 117,482 km        | 97,594 km        | -19,888   | 82.6%              | 84.9%             | +2.3%
+June 2025        | 122,287 km        | 94,284 km        | -28,003   | 80.1%              | 83.8%             | +3.7%
+March 2025       | 147,128 km        | 135,471 km       | -11,657   | 69.0%              | 70.7%             | +1.7%
+May 2025         | 179,880 km        | 147,029 km       | -32,851   | 73.6%              | 77.0%             | +3.4%
+November 2025    | 133,020 km        | 123,029 km       | -9,991    | 81.9%              | 82.6%             | +0.7%
+October 2025     | 177,090 km        | 142,114 km       | -34,976   | 75.7%              | 79.3%             | +3.6%
+September 2025   | 127,722 km        | 113,239 km       | -14,483   | 80.9%              | 82.1%             | +1.2%
+
+TOTAL REDUCTION: 327,070 km of deadmiles eliminated!
+AVERAGE IMPROVEMENT: +3.1% in loaded/total ratio
+
+KEY INSIGHTS:
+- February 2025 saw the biggest improvement: 45,048 km reduction (7.9% efficiency gain)
+- January 2026 had 49,732 km reduction (6.1% efficiency gain)
+- All months showed improvement in reducing empty miles
+- Loaded ratio improved across all months, ranging from 0.7% to 7.9%
