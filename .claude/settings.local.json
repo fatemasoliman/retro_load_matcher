@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m pip install:*)",
+      "Bash(python3:*)",
+      "Bash(source venv/bin/activate)",
+      "Bash(pip install:*)",
+      "Bash(python schedule_loads.py:*)",
+      "Bash(chmod:*)",
+      "Bash(./run_scheduler.sh:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
