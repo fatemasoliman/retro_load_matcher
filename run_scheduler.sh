@@ -16,4 +16,5 @@ else
 fi
 
 # Run the scheduler with provided arguments
+# Note: num_vehicles is now optional if active_vehicles.csv exists
 python schedule_loads.py "$@"

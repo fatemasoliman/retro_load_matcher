@@ -1,14 +1,14 @@
-# Data files
-loads.csv
-*_loads.csv
-actual.csv
+# Output files - ignore entire outputs folder
+outputs/
 
-# Output files
-schedules/
-monthly_summary.csv
+# Keep folder structure in git (add these to git explicitly)
+!outputs/.gitkeep
+!outputs/schedules/.gitkeep
+!outputs/visualizations/.gitkeep
 
-# Visualization files
-visualizations/
+# Input data files (uncomment to ignore)
+# inputs/loads.csv
+# inputs/actual.csv
 
 # Python
 venv/

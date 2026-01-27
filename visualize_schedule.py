@@ -309,13 +309,13 @@ def main():
     )
     parser.add_argument(
         '--input',
-        default='schedule_output.csv',
-        help='Input CSV file with schedule (default: schedule_output.csv)'
+        default='outputs/schedules/schedule_output.csv',
+        help='Input CSV file with schedule (default: outputs/schedules/schedule_output.csv)'
     )
     parser.add_argument(
         '--output',
-        default='visualizations/schedule_gantt.png',
-        help='Output image file (default: visualizations/schedule_gantt.png)'
+        default='outputs/visualizations/schedule_gantt.png',
+        help='Output image file (default: outputs/visualizations/schedule_gantt.png)'
     )
     parser.add_argument(
         '--speed',

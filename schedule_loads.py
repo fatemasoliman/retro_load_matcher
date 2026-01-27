@@ -112,6 +112,42 @@ def load_csv(filepath_or_url, month_filter=None):
     return df
 
 
+def load_active_vehicles(filepath='inputs/active_vehicles.csv'):
+    """
+    Load active vehicles data from CSV.
+
+    Args:
+        filepath: Path to the active_vehicles.csv file
+
+    Returns:
+        Dictionary mapping date -> set of active vehicle keys
+    """
+    try:
+        df = pd.read_csv(filepath)
+
+        # Parse the active_date column
+        df['active_date'] = pd.to_datetime(df['active_date'], format='%m/%d/%y')
+
+        # Create a dictionary mapping date -> set of vehicle keys
+        active_vehicles_by_date = {}
+
+        for _, row in df.iterrows():
+            date = row['active_date'].date()  # Just the date, no time
+            # Split the comma-separated vehicle keys
+            vehicle_keys = set(key.strip() for key in row['vehicle_keys'].split(','))
+            active_vehicles_by_date[date] = vehicle_keys
+
+        return active_vehicles_by_date
+    except FileNotFoundError:
+        print(f"Warning: Active vehicles file not found at {filepath}")
+        print("Proceeding without vehicle availability constraints.")
+        return None
+    except Exception as e:
+        print(f"Warning: Error loading active vehicles: {e}")
+        print("Proceeding without vehicle availability constraints.")
+        return None
+
+
 class Load:
     """Represents a single load with all its attributes."""
 
@@ -137,25 +173,34 @@ class Vehicle:
     """Represents a vehicle with its assigned loads."""
 
     def __init__(self, vehicle_id):
-        self.id = vehicle_id
+        self.id = vehicle_id  # Now uses actual vehicle key (e.g., vch12ee26e3c19adf9c)
         self.loads = []
         self.total_revenue = 0
         self.current_lat = None
         self.current_lng = None
         self.available_at = None
 
-    def can_assign_load(self, load, avg_speed_kmh=60):
+    def can_assign_load(self, load, avg_speed_kmh=60, active_vehicles_by_date=None):
         """
         Check if a load can be assigned to this vehicle.
 
         Args:
             load: Load object to check
             avg_speed_kmh: Average speed for travel time calculation
+            active_vehicles_by_date: Dict mapping date -> set of active vehicle keys (optional)
 
         Returns:
             True if load can be assigned, False otherwise
         """
-        # If no loads assigned yet, can always assign
+        # If active vehicles data is provided, check if this vehicle was active on pickup date
+        if active_vehicles_by_date is not None:
+            pickup_date = load.pickup_date.date()  # Just the date, no time
+            if pickup_date in active_vehicles_by_date:
+                if self.id not in active_vehicles_by_date[pickup_date]:
+                    return False
+            # If date not in active_vehicles_by_date, we can't verify, so allow it
+
+        # If no loads assigned yet, can always assign (subject to active date check above)
         if not self.loads:
             return True
 
@@ -192,28 +237,33 @@ class Vehicle:
         return f"Vehicle {self.id}: {len(self.loads)} loads, ${self.total_revenue} revenue"
 
 
-def schedule_loads(loads_df, num_vehicles, avg_speed_kmh=60, deadmile_weight=0.3):
+def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weight=0.3,
+                   active_vehicles_file='inputs/active_vehicles.csv'):
     """
     Schedule loads across vehicles to maximize revenue and minimize deadmiles.
 
     Uses a greedy algorithm that:
     1. Sorts loads chronologically by pickup date
-    2. For each load, finds compatible vehicles (available + can reach in time)
+    2. For each load, finds compatible vehicles (available on pickup date + can reach in time)
     3. Assigns to vehicle with best score balancing:
        - Revenue distribution (prefer underutilized vehicles)
        - Deadmile minimization (prefer vehicles closer to pickup)
 
     Args:
         loads_df: DataFrame with load data
-        num_vehicles: Number of vehicles available
+        num_vehicles: Number of vehicles (ignored if active_vehicles_file is provided)
         avg_speed_kmh: Average speed for travel time calculation
         deadmile_weight: Weight for deadmile penalty (0-1, default 0.3)
                         Higher = more emphasis on reducing deadmiles
                         Lower = more emphasis on revenue balance
+        active_vehicles_file: Path to active vehicles CSV file
 
     Returns:
         List of Vehicle objects with assigned loads
     """
+    # Load active vehicles data
+    active_vehicles_by_date = load_active_vehicles(active_vehicles_file)
+
     # Convert DataFrame rows to Load objects
     loads = [Load(row) for _, row in loads_df.iterrows()]
 
@@ -223,13 +273,27 @@ def schedule_loads(loads_df, num_vehicles, avg_speed_kmh=60, deadmile_weight=0.3
     # Sort loads chronologically by pickup_date, then by revenue (descending) as tiebreaker
     loads.sort(key=lambda l: (l.pickup_date, -l.revenue))
 
-    # Initialize vehicles
-    vehicles = [Vehicle(i + 1) for i in range(num_vehicles)]
+    # Initialize vehicles based on active vehicles data
+    if active_vehicles_by_date:
+        # Get all unique vehicle keys across all dates
+        all_vehicle_keys = set()
+        for vehicle_set in active_vehicles_by_date.values():
+            all_vehicle_keys.update(vehicle_set)
+
+        # Create Vehicle objects using actual vehicle keys
+        vehicles = [Vehicle(vehicle_key) for vehicle_key in sorted(all_vehicle_keys)]
+        print(f"Loaded {len(vehicles)} vehicles from active_vehicles.csv")
+    else:
+        # Fallback to numbered vehicles if active vehicles file not available
+        if num_vehicles is None:
+            raise ValueError("num_vehicles must be provided if active_vehicles.csv is not available")
+        vehicles = [Vehicle(f"vehicle_{i + 1}") for i in range(num_vehicles)]
+        print(f"Using {num_vehicles} numbered vehicles (active_vehicles.csv not available)")
 
     # Try to assign each load to a vehicle
     for load in loads:
         # Find all vehicles that can take this load
-        compatible_vehicles = [v for v in vehicles if v.can_assign_load(load, avg_speed_kmh)]
+        compatible_vehicles = [v for v in vehicles if v.can_assign_load(load, avg_speed_kmh, active_vehicles_by_date)]
 
         if compatible_vehicles:
             # Score each compatible vehicle based on:
@@ -347,6 +411,9 @@ def print_summary(vehicles, avg_speed_kmh=60):
     median_revenue = np.median(vehicle_revenues) if vehicle_revenues else 0
     variance_revenue = np.var(vehicle_revenues) if vehicle_revenues else 0
 
+    # Count vehicles with loads
+    vehicles_with_loads = sum(1 for v in vehicles if len(v.loads) > 0)
+
     print("\n" + "=" * 80)
     print("SCHEDULING SUMMARY")
     print("=" * 80)
@@ -354,13 +421,14 @@ def print_summary(vehicles, avg_speed_kmh=60):
     if month:
         print(f"Month: {month}")
     print(f"Number of vehicles: {len(vehicles)}")
+    print(f"Number of vehicles used: {vehicles_with_loads}")
     print(f"Number of loads assigned: {total_loads}")
     print(f"Total loaded kilometers: {total_loaded_km:,.2f} km")
     print(f"Total unloaded kilometers: {total_unloaded_km:,.2f} km")
     print(f"Total kilometers (loaded + unloaded): {total_km:,.2f} km")
     print(f"Loaded/Total ratio: {(total_loaded_km/total_km*100) if total_km > 0 else 0:.1f}%")
     print(f"\nTotal revenue: SAR {total_revenue:,.2f}")
-    print(f"Revenue per vehicle (mean): SAR {total_revenue / len(vehicles):,.2f}")
+    print(f"Revenue per vehicle used (mean): SAR {total_revenue / vehicles_with_loads if vehicles_with_loads > 0 else 0:,.2f}")
     print(f"Revenue per vehicle (median): SAR {median_revenue:,.2f}")
     print(f"Revenue per vehicle (variance): {variance_revenue:,.2f}")
     if total_loads > 0:
@@ -421,37 +489,43 @@ def calculate_month_statistics(vehicles, avg_speed_kmh=60):
     median_revenue = np.median(vehicle_revenues) if vehicle_revenues else 0
     variance_revenue = np.var(vehicle_revenues) if vehicle_revenues else 0
 
+    # Count only vehicles that actually got loads assigned
+    vehicles_with_loads = sum(1 for v in vehicles if len(v.loads) > 0)
+
     return {
         'month': month,
         'num_vehicles': len(vehicles),
+        'num_vehicles_used': vehicles_with_loads,
         'num_loads': total_loads,
         'total_loaded_km': total_loaded_km,
         'total_unloaded_km': total_unloaded_km,
         'total_km': total_km,
         'loaded_ratio': (total_loaded_km / total_km * 100) if total_km > 0 else 0,
         'total_revenue': total_revenue,
-        'revenue_per_vehicle': total_revenue / len(vehicles) if len(vehicles) > 0 else 0,
+        'revenue_per_vehicle': total_revenue / vehicles_with_loads if vehicles_with_loads > 0 else 0,
         'median_revenue_per_vehicle': median_revenue,
         'variance_revenue_per_vehicle': variance_revenue,
         'avg_revenue_per_load': total_revenue / total_loads if total_loads > 0 else 0
     }
 
 
-def process_single_month(loads_df, num_vehicles, avg_speed_kmh, output_file, deadmile_weight=0.3):
+def process_single_month(loads_df, num_vehicles, avg_speed_kmh, output_file, deadmile_weight=0.3,
+                        active_vehicles_file='inputs/active_vehicles.csv'):
     """
     Process a single month's loads.
 
     Args:
         loads_df: DataFrame with load data
-        num_vehicles: Number of vehicles
+        num_vehicles: Number of vehicles (optional if using active_vehicles_file)
         avg_speed_kmh: Average speed
         output_file: Output CSV file path
         deadmile_weight: Weight for deadmile penalty (0-1)
+        active_vehicles_file: Path to active vehicles CSV
 
     Returns:
         Statistics dictionary
     """
-    vehicles = schedule_loads(loads_df, num_vehicles, avg_speed_kmh, deadmile_weight)
+    vehicles = schedule_loads(loads_df, num_vehicles, avg_speed_kmh, deadmile_weight, active_vehicles_file)
     generate_schedule_output(vehicles, output_file)
     return calculate_month_statistics(vehicles, avg_speed_kmh)
 
@@ -464,17 +538,19 @@ def main():
     parser.add_argument(
         'num_vehicles',
         type=int,
-        help='Number of vehicles available'
+        nargs='?',
+        default=None,
+        help='Number of vehicles (optional, auto-detected from active_vehicles.csv if available)'
     )
     parser.add_argument(
         '--input',
-        default='loads.csv',
-        help='Input CSV file path or URL (default: loads.csv)'
+        default='inputs/loads.csv',
+        help='Input CSV file path or URL (default: inputs/loads.csv)'
     )
     parser.add_argument(
         '--output',
-        default='schedules/schedule_output.csv',
-        help='Output CSV file for schedule (default: schedules/schedule_output.csv)'
+        default='outputs/schedules/schedule_output.csv',
+        help='Output CSV file for schedule (default: outputs/schedules/schedule_output.csv)'
     )
     parser.add_argument(
         '--speed',
@@ -497,11 +573,23 @@ def main():
         default=0.3,
         help='Weight for deadmile minimization (0-1, default: 0.3). Higher values prioritize reducing empty miles.'
     )
+    parser.add_argument(
+        '--active-vehicles',
+        default='inputs/active_vehicles.csv',
+        help='Path to active vehicles CSV file (default: inputs/active_vehicles.csv)'
+    )
 
     args = parser.parse_args()
 
+    # Check if active_vehicles file exists
+    active_vehicles_exists = os.path.exists(args.active_vehicles)
+
     # Validate inputs
-    if args.num_vehicles < 1:
+    if not active_vehicles_exists and args.num_vehicles is None:
+        print("Error: Either provide num_vehicles or ensure active_vehicles.csv exists", file=sys.stderr)
+        sys.exit(1)
+
+    if args.num_vehicles is not None and args.num_vehicles < 1:
         print("Error: Number of vehicles must be at least 1", file=sys.stderr)
         sys.exit(1)
 
@@ -542,16 +630,18 @@ def main():
                 month_df = loads_df[loads_df['month_temp'] == month].copy()
 
             print(f"Found {len(month_df)} loads for {month}")
-            print(f"Scheduling for {args.num_vehicles} vehicles...")
+            if args.num_vehicles:
+                print(f"Max vehicles: {args.num_vehicles} (actual availability from active_vehicles.csv)")
             print(f"Using average speed of {args.speed} km/h for travel time calculations\n")
 
             # Generate month-specific output file
             month_slug = month.replace(' ', '_').lower()
-            os.makedirs('schedules', exist_ok=True)
-            output_file = f"schedules/schedule_{month_slug}.csv"
+            os.makedirs('outputs/schedules', exist_ok=True)
+            output_file = f"outputs/schedules/schedule_{month_slug}.csv"
 
             # Process this month
-            stats = process_single_month(month_df, args.num_vehicles, args.speed, output_file, args.deadmile_weight)
+            stats = process_single_month(month_df, args.num_vehicles, args.speed, output_file,
+                                        args.deadmile_weight, args.active_vehicles)
             all_month_stats.append(stats)
 
             # Print this month's summary
@@ -572,7 +662,7 @@ def main():
 
         # Generate summary CSV
         summary_df = pd.DataFrame(all_month_stats)
-        summary_file = 'monthly_summary.csv'
+        summary_file = 'outputs/monthly_summary.csv'
         summary_df.to_csv(summary_file, index=False)
 
         print(f"\n{'=' * 80}")
@@ -588,11 +678,12 @@ def main():
             print(f"Filtering for month: {args.month}")
 
         print(f"Found {len(loads_df)} loads")
-        print(f"Scheduling for {args.num_vehicles} vehicles...")
+        if args.num_vehicles:
+            print(f"Max vehicles: {args.num_vehicles} (actual availability from active_vehicles.csv)")
         print(f"Using average speed of {args.speed} km/h for travel time calculations\n")
 
         # Run scheduling algorithm
-        vehicles = schedule_loads(loads_df, args.num_vehicles, args.speed, args.deadmile_weight)
+        vehicles = schedule_loads(loads_df, args.num_vehicles, args.speed, args.deadmile_weight, args.active_vehicles)
 
         # Generate output
         print(f"Writing schedule to {args.output}...")

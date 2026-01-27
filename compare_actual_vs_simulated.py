@@ -16,13 +16,14 @@ def load_actual_data(filepath):
     """
     Load actual performance data from CSV.
 
-    Expected columns: month, actual_gb_per_vehicle (or similar)
+    Expected columns: month, actual_gb_per_vehicle (or similar), vehicles
     """
     df = pd.read_csv(filepath)
 
-    # Try to identify the month and revenue columns
+    # Try to identify the month, revenue, and vehicles columns
     month_col = None
     revenue_col = None
+    vehicles_col = None
 
     for col in df.columns:
         col_lower = col.lower()
@@ -30,6 +31,8 @@ def load_actual_data(filepath):
             month_col = col
         elif 'gb_per_vehicle' in col_lower or 'per_vehicle' in col_lower or 'revenue_per_vehicle' in col_lower:
             revenue_col = col
+        elif col_lower == 'vehicles' or 'vehicle' in col_lower and 'per' not in col_lower:
+            vehicles_col = col
 
     if month_col is None or revenue_col is None:
         print(f"Error: Could not identify month and revenue columns in {filepath}")
@@ -37,7 +40,10 @@ def load_actual_data(filepath):
         sys.exit(1)
 
     # Rename for consistency
-    df = df.rename(columns={month_col: 'month', revenue_col: 'actual_gb_per_vehicle'})
+    rename_dict = {month_col: 'month', revenue_col: 'actual_gb_per_vehicle'}
+    if vehicles_col:
+        rename_dict[vehicles_col] = 'actual_vehicles'
+    df = df.rename(columns=rename_dict)
 
     # Parse the month column - handle various date formats
     try:
@@ -50,19 +56,33 @@ def load_actual_data(filepath):
         # If it fails, assume it's already in the correct format
         pass
 
-    return df[['month', 'actual_gb_per_vehicle']]
+    columns_to_return = ['month', 'actual_gb_per_vehicle']
+    if 'actual_vehicles' in df.columns:
+        columns_to_return.append('actual_vehicles')
+
+    return df[columns_to_return]
 
 
 def load_simulated_data(filepath):
     """Load simulated data from monthly summary."""
     df = pd.read_csv(filepath)
-    return df[['month', 'revenue_per_vehicle']]
+    columns_to_return = ['month', 'total_revenue']
+    # Use num_vehicles_used if available, fallback to num_vehicles
+    if 'num_vehicles_used' in df.columns:
+        df['num_vehicles'] = df['num_vehicles_used']
+    if 'num_vehicles' in df.columns:
+        columns_to_return.append('num_vehicles')
+    return df[columns_to_return]
 
 
 def merge_and_prepare_data(actual_df, simulated_df):
     """Merge actual and simulated data."""
     # Merge on month
     merged = pd.merge(actual_df, simulated_df, on='month', how='outer')
+
+    # Recalculate simulated revenue per vehicle using ACTUAL vehicle count for fair comparison
+    if 'total_revenue' in merged.columns and 'actual_vehicles' in merged.columns:
+        merged['revenue_per_vehicle'] = merged['total_revenue'] / merged['actual_vehicles']
 
     # Convert month to datetime for proper sorting
     try:
@@ -87,74 +107,113 @@ def create_comparison_plot(merged_df, output_file='visualizations/actual_vs_simu
         figsize: Figure size in inches (width, height)
         dpi: Resolution of output image
     """
+    # Check if we have vehicle count data
+    has_vehicle_data = 'actual_vehicles' in merged_df.columns or 'num_vehicles' in merged_df.columns
+
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
 
     # Prepare data
     months = merged_df['month']
     actual = merged_df['actual_gb_per_vehicle']
     simulated = merged_df['revenue_per_vehicle']
+    difference = simulated - actual
 
     # Create x-axis positions
     x = range(len(months))
-    width = 0.35
 
-    # Create bars
-    bars1 = ax.bar([i - width/2 for i in x], actual, width,
-                    label='Actual', color='#2ecc71', alpha=0.8, edgecolor='black', linewidth=0.5)
-    bars2 = ax.bar([i + width/2 for i in x], simulated, width,
-                    label='Simulated', color='#3498db', alpha=0.8, edgecolor='black', linewidth=0.5)
+    # Create bars for the difference on the same axis
+    colors = ['#27ae60' if d > 0 else '#e74c3c' for d in difference]
+    bars = ax.bar(x, difference, alpha=0.25, color=colors, width=0.4,
+                  label='Difference (Sim - Actual)', zorder=2, edgecolor='black', linewidth=0.5)
 
-    # Calculate difference and add annotations
-    for i, (act, sim) in enumerate(zip(actual, simulated)):
-        if pd.notna(act) and pd.notna(sim):
-            diff = ((sim - act) / act * 100) if act != 0 else 0
-            # Add difference percentage on top
-            y_pos = max(act, sim)
-            color = '#27ae60' if diff >= 0 else '#e74c3c'
-            ax.text(i, y_pos + 500, f'{diff:+.1f}%',
-                   ha='center', va='bottom', fontsize=8, fontweight='bold', color=color)
+    # Add value labels on difference bars
+    for i, diff in enumerate(difference):
+        if pd.notna(diff) and abs(diff) > 100:  # Only show if difference is significant
+            label_y = diff
+            va = 'bottom' if diff > 0 else 'top'
+            offset = 400 if diff > 0 else -400
+            ax.text(i, label_y + offset, f'{diff:,.0f}',
+                   ha='center', va=va, fontsize=7, color='#34495e', fontweight='bold',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7, edgecolor='none'))
+
+    # Create line plots (on top of bars)
+    line1 = ax.plot(x, actual, marker='o', linewidth=2.5, markersize=8,
+                    label='Actual', color='#2ecc71', alpha=0.9, zorder=4)
+    line2 = ax.plot(x, simulated, marker='s', linewidth=2.5, markersize=8,
+                    label='Simulated', color='#3498db', alpha=0.9, zorder=4)
+
+    # Add a zero reference line
+    ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8, alpha=0.3, zorder=1)
 
     # Formatting
     ax.set_xlabel('Month', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Revenue per Vehicle (SAR)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('GB/vehicle', fontsize=12, fontweight='bold')
     ax.set_title('Actual vs Simulated Revenue per Vehicle', fontsize=16, fontweight='bold', pad=20)
     ax.set_xticks(x)
     ax.set_xticklabels(months, rotation=45, ha='right')
-    ax.legend(loc='upper left', fontsize=11, framealpha=0.9)
 
     # Add grid
-    ax.grid(True, axis='y', alpha=0.3, linestyle='--')
+    ax.grid(True, alpha=0.3, linestyle='--')
     ax.set_axisbelow(True)
 
-    # Add value labels on bars
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            height = bar.get_height()
-            if pd.notna(height) and height > 0:
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'SAR {height:,.0f}',
-                       ha='center', va='bottom', fontsize=7, rotation=90)
+    # Add value labels on lines (simplified to avoid clutter)
+    # Only show values at the end points
+    if len(actual) > 0:
+        first_idx, last_idx = 0, len(actual) - 1
+        if pd.notna(actual.iloc[first_idx]):
+            ax.text(first_idx - 0.3, actual.iloc[first_idx], f'{actual.iloc[first_idx]:,.0f}',
+                   ha='right', va='center', fontsize=8, color='#2ecc71', fontweight='bold')
+        if pd.notna(actual.iloc[last_idx]):
+            ax.text(last_idx + 0.3, actual.iloc[last_idx], f'{actual.iloc[last_idx]:,.0f}',
+                   ha='left', va='center', fontsize=8, color='#2ecc71', fontweight='bold')
+        if pd.notna(simulated.iloc[first_idx]):
+            ax.text(first_idx - 0.3, simulated.iloc[first_idx], f'{simulated.iloc[first_idx]:,.0f}',
+                   ha='right', va='center', fontsize=8, color='#3498db', fontweight='bold')
+        if pd.notna(simulated.iloc[last_idx]):
+            ax.text(last_idx + 0.3, simulated.iloc[last_idx], f'{simulated.iloc[last_idx]:,.0f}',
+                   ha='left', va='center', fontsize=8, color='#3498db', fontweight='bold')
 
-    # Calculate summary statistics
-    valid_data = merged_df[merged_df['actual_gb_per_vehicle'].notna() &
-                           merged_df['revenue_per_vehicle'].notna()]
+    # Add vehicle count line if data is available
+    if has_vehicle_data:
+        # Create secondary y-axis for vehicle count
+        ax2 = ax.twinx()
 
-    if len(valid_data) > 0:
-        avg_actual = valid_data['actual_gb_per_vehicle'].mean()
-        avg_simulated = valid_data['revenue_per_vehicle'].mean()
-        overall_diff = ((avg_simulated - avg_actual) / avg_actual * 100) if avg_actual != 0 else 0
+        # Get vehicle count data (prefer actual, fallback to simulated)
+        if 'actual_vehicles' in merged_df.columns:
+            vehicle_counts = merged_df['actual_vehicles']
+            label = 'Actual Vehicles'
+            color = '#e67e22'
+        elif 'num_vehicles' in merged_df.columns:
+            vehicle_counts = merged_df['num_vehicles']
+            label = 'Simulated Vehicles'
+            color = '#e67e22'
 
-        # Add summary text box
-        summary_text = (
-            f'Summary Statistics:\n'
-            f'Avg Actual: SAR {avg_actual:,.2f}/vehicle\n'
-            f'Avg Simulated: SAR {avg_simulated:,.2f}/vehicle\n'
-            f'Overall Difference: {overall_diff:+.1f}%'
-        )
+        # Plot vehicle count line
+        line = ax2.plot(x, vehicle_counts, color=color, marker='D', linewidth=2.5,
+                       markersize=6, label=label, zorder=5, alpha=0.9, linestyle='--')
 
-        ax.text(0.98, 0.98, summary_text, transform=ax.transAxes,
-               fontsize=10, verticalalignment='top', horizontalalignment='right',
-               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+        # Style the vehicle count axis
+        ax2.set_ylabel('Number of Vehicles', fontsize=12, fontweight='bold', color=color)
+        ax2.tick_params(axis='y', labelcolor=color)
+        ax2.grid(False)
+
+        # Add vehicle count labels on the line
+        for i, count in enumerate(vehicle_counts):
+            if pd.notna(count):
+                ax2.text(i, count + max(vehicle_counts) * 0.02, f'{int(count)}',
+                        ha='center', va='bottom', fontsize=8, fontweight='bold',
+                        color=color, bbox=dict(boxstyle='round,pad=0.3',
+                        facecolor='white', edgecolor=color, alpha=0.8))
+
+        # Combine all legends and place below plot
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc='upper center',
+                 bbox_to_anchor=(0.5, -0.15), ncol=4, fontsize=10, framealpha=0.9)
+    else:
+        # Just use main plot legend
+        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),
+                 ncol=3, fontsize=11, framealpha=0.9)
 
     # Adjust layout
     plt.tight_layout()
@@ -223,27 +282,43 @@ def create_line_plot(merged_df, output_file='visualizations/actual_vs_simulated_
 
 def print_comparison_table(merged_df):
     """Print a detailed comparison table."""
-    print("\n" + "=" * 100)
+    print("\n" + "=" * 120)
     print("ACTUAL VS SIMULATED COMPARISON")
-    print("=" * 100)
+    print("=" * 120)
 
     # Calculate difference
     merged_df['difference'] = merged_df['revenue_per_vehicle'] - merged_df['actual_gb_per_vehicle']
     merged_df['difference_pct'] = (merged_df['difference'] / merged_df['actual_gb_per_vehicle'] * 100)
 
+    # Prepare columns for display
+    columns_to_show = ['month', 'actual_gb_per_vehicle', 'revenue_per_vehicle',
+                       'difference', 'difference_pct']
+    column_names = ['Month', 'Actual (SAR/veh)', 'Simulated (SAR/veh)', 'Difference (SAR)', 'Difference (%)']
+
+    # Add vehicle counts if available
+    if 'actual_vehicles' in merged_df.columns:
+        columns_to_show.insert(1, 'actual_vehicles')
+        column_names.insert(1, 'Actual Veh')
+    if 'num_vehicles' in merged_df.columns:
+        columns_to_show.insert(2 if 'actual_vehicles' in merged_df.columns else 1, 'num_vehicles')
+        column_names.insert(2 if 'actual_vehicles' in merged_df.columns else 1, 'Sim Veh')
+
     # Format for display
-    display_df = merged_df[['month', 'actual_gb_per_vehicle', 'revenue_per_vehicle',
-                            'difference', 'difference_pct']].copy()
-    display_df.columns = ['Month', 'Actual (SAR/veh)', 'Simulated (SAR/veh)', 'Difference (SAR)', 'Difference (%)']
+    display_df = merged_df[columns_to_show].copy()
+    display_df.columns = column_names
 
     # Round values
-    display_df['Actual (SAR/veh)'] = display_df['Actual (SAR/veh)'].round(2)
-    display_df['Simulated (SAR/veh)'] = display_df['Simulated (SAR/veh)'].round(2)
-    display_df['Difference (SAR)'] = display_df['Difference (SAR)'].round(2)
-    display_df['Difference (%)'] = display_df['Difference (%)'].round(1)
+    if 'Actual (SAR/veh)' in display_df.columns:
+        display_df['Actual (SAR/veh)'] = display_df['Actual (SAR/veh)'].round(2)
+    if 'Simulated (SAR/veh)' in display_df.columns:
+        display_df['Simulated (SAR/veh)'] = display_df['Simulated (SAR/veh)'].round(2)
+    if 'Difference (SAR)' in display_df.columns:
+        display_df['Difference (SAR)'] = display_df['Difference (SAR)'].round(2)
+    if 'Difference (%)' in display_df.columns:
+        display_df['Difference (%)'] = display_df['Difference (%)'].round(1)
 
     print(display_df.to_string(index=False))
-    print("=" * 100)
+    print("=" * 120)
 
     # Calculate summary statistics
     valid_data = merged_df[merged_df['actual_gb_per_vehicle'].notna() &
@@ -266,23 +341,18 @@ def main():
     )
     parser.add_argument(
         '--actual',
-        default='actual.csv',
-        help='Input CSV file with actual data (default: actual.csv)'
+        default='inputs/actual.csv',
+        help='Input CSV file with actual data (default: inputs/actual.csv)'
     )
     parser.add_argument(
         '--simulated',
-        default='monthly_summary.csv',
-        help='Input CSV file with simulated data (default: monthly_summary.csv)'
+        default='outputs/monthly_summary.csv',
+        help='Input CSV file with simulated data (default: outputs/monthly_summary.csv)'
     )
     parser.add_argument(
         '--output',
-        default='visualizations/actual_vs_simulated.png',
-        help='Output image file (default: visualizations/actual_vs_simulated.png)'
-    )
-    parser.add_argument(
-        '--line-plot',
-        action='store_true',
-        help='Also create a line plot comparison'
+        default='outputs/visualizations/actual_vs_simulated.png',
+        help='Output image file (default: outputs/visualizations/actual_vs_simulated.png)'
     )
     parser.add_argument(
         '--width',
@@ -333,16 +403,10 @@ def main():
     # Print comparison table
     print_comparison_table(merged_df)
 
-    # Create bar chart
+    # Create comparison chart with vehicle counts
     print(f"\nCreating comparison chart...")
     create_comparison_plot(merged_df, args.output,
                           figsize=(args.width, args.height), dpi=args.dpi)
-
-    # Create line plot if requested
-    if args.line_plot:
-        line_output = args.output.replace('.png', '_line.png')
-        create_line_plot(merged_df, line_output,
-                        figsize=(args.width, args.height), dpi=args.dpi)
 
     print("\nComparison complete!")
 
