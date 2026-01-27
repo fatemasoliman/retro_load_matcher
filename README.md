@@ -103,7 +103,39 @@ python schedule_loads.py 10 [OPTIONS]
 
 After generating a schedule, you can create visual Gantt charts to see the timeline for each vehicle.
 
-### Basic Visualization
+### Monthly Gantt Charts (Recommended)
+
+For better readability, generate separate Gantt charts for each month:
+
+```bash
+source venv/bin/activate
+python visualize_monthly_gantts.py
+```
+
+This creates individual Gantt charts for each month showing:
+- Each vehicle's timeline for that month
+- Load assignments (blue bars with revenue labels)
+- Travel time between loads (gray bars)
+- Monthly statistics (vehicles, loads, revenue)
+- Automatic height adjustment based on number of vehicles
+
+The outputs are saved as `outputs/visualizations/monthly_gantts/gantt_[month].png`.
+
+**Options:**
+```bash
+python visualize_monthly_gantts.py [OPTIONS]
+
+Options:
+  --schedules-dir DIR   Directory with monthly schedules (default: outputs/schedules)
+  --output-dir DIR      Output directory for charts (default: outputs/visualizations/monthly_gantts)
+  --speed SPEED         Average vehicle speed in km/h (default: 60)
+  --width WIDTH         Figure width in inches (default: 20)
+  --dpi DPI            Image resolution (default: 150)
+```
+
+### Basic Visualization (All Loads)
+
+For a single comprehensive view (may be hard to read with many vehicles):
 
 ```bash
 ./visualize.sh
