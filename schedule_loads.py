@@ -370,7 +370,7 @@ def generate_schedule_output(vehicles, output_file='schedule_output.csv'):
     return output_df
 
 
-def print_summary(vehicles, avg_speed_kmh=60):
+def print_summary(vehicles, avg_speed_kmh=60, active_vehicles_by_date=None, loads_df=None):
     """Print summary statistics of the schedule."""
     total_revenue = sum(v.total_revenue for v in vehicles)
     total_loads = sum(len(v.loads) for v in vehicles)
@@ -414,13 +414,23 @@ def print_summary(vehicles, avg_speed_kmh=60):
     # Count vehicles with loads
     vehicles_with_loads = sum(1 for v in vehicles if len(v.loads) > 0)
 
+    # Count vehicles active in this month
+    num_vehicles_active_in_month = len(vehicles)  # default
+    if active_vehicles_by_date and loads_df is not None and not loads_df.empty:
+        # Get all unique vehicles that were active during any date in this month
+        unique_vehicles_in_month = set()
+        for date in loads_df['pickup_date'].dt.date.unique():
+            if date in active_vehicles_by_date:
+                unique_vehicles_in_month.update(active_vehicles_by_date[date])
+        num_vehicles_active_in_month = len(unique_vehicles_in_month)
+
     print("\n" + "=" * 80)
     print("SCHEDULING SUMMARY")
     print("=" * 80)
 
     if month:
         print(f"Month: {month}")
-    print(f"Number of vehicles: {len(vehicles)}")
+    print(f"Number of vehicles: {num_vehicles_active_in_month}")
     print(f"Number of vehicles used: {vehicles_with_loads}")
     print(f"Number of loads assigned: {total_loads}")
     print(f"Total loaded kilometers: {total_loaded_km:,.2f} km")
@@ -447,13 +457,15 @@ def print_summary(vehicles, avg_speed_kmh=60):
     print("=" * 80 + "\n")
 
 
-def calculate_month_statistics(vehicles, avg_speed_kmh=60):
+def calculate_month_statistics(vehicles, avg_speed_kmh=60, active_vehicles_by_date=None, loads_df=None):
     """
     Calculate statistics for a month's schedule.
 
     Args:
         vehicles: List of Vehicle objects with assigned loads
         avg_speed_kmh: Average speed for travel time calculation
+        active_vehicles_by_date: Dictionary mapping date -> set of active vehicle keys
+        loads_df: DataFrame with loads for this month (to determine date range)
 
     Returns:
         Dictionary with statistics
@@ -492,9 +504,19 @@ def calculate_month_statistics(vehicles, avg_speed_kmh=60):
     # Count only vehicles that actually got loads assigned
     vehicles_with_loads = sum(1 for v in vehicles if len(v.loads) > 0)
 
+    # Count vehicles active in this month
+    num_vehicles_active_in_month = len(vehicles)  # default
+    if active_vehicles_by_date and loads_df is not None and not loads_df.empty:
+        # Get all unique vehicles that were active during any date in this month
+        unique_vehicles_in_month = set()
+        for date in loads_df['pickup_date'].dt.date.unique():
+            if date in active_vehicles_by_date:
+                unique_vehicles_in_month.update(active_vehicles_by_date[date])
+        num_vehicles_active_in_month = len(unique_vehicles_in_month)
+
     return {
         'month': month,
-        'num_vehicles': len(vehicles),
+        'num_vehicles': num_vehicles_active_in_month,
         'num_vehicles_used': vehicles_with_loads,
         'num_loads': total_loads,
         'total_loaded_km': total_loaded_km,
@@ -525,9 +547,12 @@ def process_single_month(loads_df, num_vehicles, avg_speed_kmh, output_file, dea
     Returns:
         Statistics dictionary
     """
+    # Load active vehicles data
+    active_vehicles_by_date = load_active_vehicles(active_vehicles_file)
+
     vehicles = schedule_loads(loads_df, num_vehicles, avg_speed_kmh, deadmile_weight, active_vehicles_file)
     generate_schedule_output(vehicles, output_file)
-    return calculate_month_statistics(vehicles, avg_speed_kmh)
+    return calculate_month_statistics(vehicles, avg_speed_kmh, active_vehicles_by_date, loads_df)
 
 
 def main():
@@ -682,6 +707,9 @@ def main():
             print(f"Max vehicles: {args.num_vehicles} (actual availability from active_vehicles.csv)")
         print(f"Using average speed of {args.speed} km/h for travel time calculations\n")
 
+        # Load active vehicles data
+        active_vehicles_by_date = load_active_vehicles(args.active_vehicles)
+
         # Run scheduling algorithm
         vehicles = schedule_loads(loads_df, args.num_vehicles, args.speed, args.deadmile_weight, args.active_vehicles)
 
@@ -691,7 +719,7 @@ def main():
         output_df = generate_schedule_output(vehicles, args.output)
 
         # Print summary
-        print_summary(vehicles, args.speed)
+        print_summary(vehicles, args.speed, active_vehicles_by_date, loads_df)
 
         print(f"Schedule saved to {args.output}")
         print("Done!")
