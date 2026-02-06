@@ -59,6 +59,8 @@ def load_actual_data(filepath):
     columns_to_return = ['month', 'actual_gb_per_vehicle']
     if 'actual_vehicles' in df.columns:
         columns_to_return.append('actual_vehicles')
+    if 'vehicle_type' in df.columns:
+        columns_to_return.append('vehicle_type')
 
     return df[columns_to_return]
 
@@ -72,13 +74,21 @@ def load_simulated_data(filepath):
         df['num_vehicles'] = df['num_vehicles_used']
     if 'num_vehicles' in df.columns:
         columns_to_return.append('num_vehicles')
+    # Include vehicle_type if available
+    if 'vehicle_type' in df.columns:
+        columns_to_return.append('vehicle_type')
     return df[columns_to_return]
 
 
 def merge_and_prepare_data(actual_df, simulated_df):
     """Merge actual and simulated data."""
-    # Merge on month
-    merged = pd.merge(actual_df, simulated_df, on='month', how='outer')
+    # Determine merge columns - use vehicle_type if available in both
+    merge_on = ['month']
+    if 'vehicle_type' in actual_df.columns and 'vehicle_type' in simulated_df.columns:
+        merge_on.append('vehicle_type')
+
+    # Merge on month (and vehicle_type if available)
+    merged = pd.merge(actual_df, simulated_df, on=merge_on, how='outer')
 
     # Recalculate simulated revenue per vehicle using ACTUAL vehicle count for fair comparison
     if 'total_revenue' in merged.columns and 'actual_vehicles' in merged.columns:
@@ -97,7 +107,7 @@ def merge_and_prepare_data(actual_df, simulated_df):
 
 
 def create_comparison_plot(merged_df, output_file='visualizations/actual_vs_simulated.png',
-                           figsize=(14, 8), dpi=150):
+                           figsize=(14, 8), dpi=150, title_suffix=''):
     """
     Create a comparison plot of actual vs simulated revenue per vehicle.
 
@@ -106,6 +116,7 @@ def create_comparison_plot(merged_df, output_file='visualizations/actual_vs_simu
         output_file: Path to save the output image
         figsize: Figure size in inches (width, height)
         dpi: Resolution of output image
+        title_suffix: Optional suffix to add to the chart title (e.g., vehicle type)
     """
     # Check if we have vehicle count data
     has_vehicle_data = 'actual_vehicles' in merged_df.columns or 'num_vehicles' in merged_df.columns
@@ -148,7 +159,10 @@ def create_comparison_plot(merged_df, output_file='visualizations/actual_vs_simu
     # Formatting
     ax.set_xlabel('Month', fontsize=12, fontweight='bold')
     ax.set_ylabel('GB/vehicle', fontsize=12, fontweight='bold')
-    ax.set_title('Actual vs Simulated Revenue per Vehicle', fontsize=16, fontweight='bold', pad=20)
+    title = 'Actual vs Simulated Revenue per Vehicle'
+    if title_suffix:
+        title += f' - {title_suffix}'
+    ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
     ax.set_xticks(x)
     ax.set_xticklabels(months, rotation=45, ha='right')
 
@@ -286,6 +300,7 @@ def print_comparison_table(merged_df):
     print("ACTUAL VS SIMULATED COMPARISON")
     print("=" * 120)
 
+
     # Calculate difference
     merged_df['difference'] = merged_df['revenue_per_vehicle'] - merged_df['actual_gb_per_vehicle']
     merged_df['difference_pct'] = (merged_df['difference'] / merged_df['actual_gb_per_vehicle'] * 100)
@@ -295,13 +310,22 @@ def print_comparison_table(merged_df):
                        'difference', 'difference_pct']
     column_names = ['Month', 'Actual (SAR/veh)', 'Simulated (SAR/veh)', 'Difference (SAR)', 'Difference (%)']
 
+    # Add vehicle type if available
+    insert_pos = 1
+    if 'vehicle_type' in merged_df.columns:
+        columns_to_show.insert(insert_pos, 'vehicle_type')
+        column_names.insert(insert_pos, 'Type')
+        insert_pos += 1
+
     # Add vehicle counts if available
     if 'actual_vehicles' in merged_df.columns:
-        columns_to_show.insert(1, 'actual_vehicles')
-        column_names.insert(1, 'Actual Veh')
+        columns_to_show.insert(insert_pos, 'actual_vehicles')
+        column_names.insert(insert_pos, 'Actual Veh')
+        insert_pos += 1
     if 'num_vehicles' in merged_df.columns:
-        columns_to_show.insert(2 if 'actual_vehicles' in merged_df.columns else 1, 'num_vehicles')
-        column_names.insert(2 if 'actual_vehicles' in merged_df.columns else 1, 'Sim Veh')
+        columns_to_show.insert(insert_pos, 'num_vehicles')
+        column_names.insert(insert_pos, 'Sim Veh')
+        insert_pos += 1
 
     # Format for display
     display_df = merged_df[columns_to_show].copy()
@@ -320,19 +344,6 @@ def print_comparison_table(merged_df):
     print(display_df.to_string(index=False))
     print("=" * 120)
 
-    # Calculate summary statistics
-    valid_data = merged_df[merged_df['actual_gb_per_vehicle'].notna() &
-                           merged_df['revenue_per_vehicle'].notna()]
-
-    if len(valid_data) > 0:
-        print(f"\nSummary Statistics:")
-        print(f"Average Actual: SAR {valid_data['actual_gb_per_vehicle'].mean():,.2f}/vehicle")
-        print(f"Average Simulated: SAR {valid_data['revenue_per_vehicle'].mean():,.2f}/vehicle")
-        print(f"Average Difference: SAR {valid_data['difference'].mean():,.2f}/vehicle")
-        print(f"Average Difference %: {valid_data['difference_pct'].mean():+.1f}%")
-        print(f"Months Compared: {len(valid_data)}")
-        print("=" * 100)
-
 
 def main():
     """Main function to run the comparison tool."""
@@ -341,8 +352,8 @@ def main():
     )
     parser.add_argument(
         '--actual',
-        default='inputs/actual.csv',
-        help='Input CSV file with actual data (default: inputs/actual.csv)'
+        default='inputs/actuals.csv',
+        help='Input CSV file with actual data (default: inputs/actuals.csv)'
     )
     parser.add_argument(
         '--simulated',
@@ -403,10 +414,43 @@ def main():
     # Print comparison table
     print_comparison_table(merged_df)
 
-    # Create comparison chart with vehicle counts
+    # Create comparison charts
     print(f"\nCreating comparison chart...")
-    create_comparison_plot(merged_df, args.output,
-                          figsize=(args.width, args.height), dpi=args.dpi)
+
+    # Check if we have vehicle type data
+    if 'vehicle_type' in merged_df.columns:
+        vehicle_types = merged_df['vehicle_type'].dropna().unique()
+
+        if len(vehicle_types) > 0:
+            print(f"Found {len(vehicle_types)} vehicle type(s): {', '.join(vehicle_types)}")
+            print("Generating separate charts for each vehicle type...")
+
+            # Create chart for each vehicle type
+            for vtype in vehicle_types:
+                vtype_df = merged_df[merged_df['vehicle_type'] == vtype].copy()
+
+                # Create output filename for this vehicle type
+                base_path = args.output.rsplit('.', 1)[0] if '.' in args.output else args.output
+                ext = args.output.rsplit('.', 1)[1] if '.' in args.output else 'png'
+                vtype_slug = vtype.lower().replace(' ', '_')
+                vtype_output = f"{base_path}_{vtype_slug}.{ext}"
+
+                print(f"  - Creating chart for {vtype}...")
+                create_comparison_plot(vtype_df, vtype_output,
+                                     figsize=(args.width, args.height), dpi=args.dpi,
+                                     title_suffix=vtype)
+                print(f"    Saved to: {vtype_output}")
+
+        # Also create an overall chart with all vehicle types
+        print("Creating combined chart for all vehicle types...")
+        create_comparison_plot(merged_df, args.output,
+                             figsize=(args.width, args.height), dpi=args.dpi)
+        print(f"Saved to: {args.output}")
+    else:
+        # No vehicle type column, just create one chart
+        create_comparison_plot(merged_df, args.output,
+                             figsize=(args.width, args.height), dpi=args.dpi)
+        print(f"Saved to: {args.output}")
 
     print("\nComparison complete!")
 

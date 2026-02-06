@@ -120,7 +120,11 @@ def load_active_vehicles(filepath='inputs/active_vehicles.csv'):
         filepath: Path to the active_vehicles.csv file
 
     Returns:
-        Dictionary mapping date -> set of active vehicle keys
+        Tuple of (active_vehicles_by_date, vehicle_types, vehicle_plates, vehicle_locations)
+        - active_vehicles_by_date: Dictionary mapping date -> set of active vehicle keys
+        - vehicle_types: Dictionary mapping vehicle_key -> vehicle_type
+        - vehicle_plates: Dictionary mapping vehicle_key -> license plate
+        - vehicle_locations: Dictionary mapping (vehicle_key, date) -> (lat, lng)
     """
     try:
         df = pd.read_csv(filepath)
@@ -128,24 +132,46 @@ def load_active_vehicles(filepath='inputs/active_vehicles.csv'):
         # Parse the active_date column
         df['active_date'] = pd.to_datetime(df['active_date'], format='%m/%d/%y')
 
-        # Create a dictionary mapping date -> set of vehicle keys
+        # Create dictionaries for vehicle data
         active_vehicles_by_date = {}
+        vehicle_types = {}
+        vehicle_plates = {}
+        vehicle_locations = {}
 
         for _, row in df.iterrows():
             date = row['active_date'].date()  # Just the date, no time
-            # Split the comma-separated vehicle keys
-            vehicle_keys = set(key.strip() for key in row['vehicle_keys'].split(','))
-            active_vehicles_by_date[date] = vehicle_keys
+            vehicle_key = row.get('VehicleKey', row.get('vehicle_key'))
+            vehicle_type = row.get('vehicle_type', None)
+            vehicle_plate = row.get('vehicle_plate', None)
+            dropoff_lat = row.get('dropoff_lat', None)
+            dropoff_lng = row.get('dropoff_lng', None)
 
-        return active_vehicles_by_date
+            # Add vehicle to this date
+            if date not in active_vehicles_by_date:
+                active_vehicles_by_date[date] = set()
+            active_vehicles_by_date[date].add(vehicle_key)
+
+            # Map vehicle key to its vehicle type (keep first seen)
+            if vehicle_type and vehicle_key not in vehicle_types:
+                vehicle_types[vehicle_key] = vehicle_type
+
+            # Map vehicle key to its license plate (keep first seen)
+            if vehicle_plate and vehicle_key not in vehicle_plates:
+                vehicle_plates[vehicle_key] = vehicle_plate
+
+            # Store vehicle location for this date
+            if dropoff_lat is not None and dropoff_lng is not None:
+                vehicle_locations[(vehicle_key, date)] = (float(dropoff_lat), float(dropoff_lng))
+
+        return active_vehicles_by_date, vehicle_types, vehicle_plates, vehicle_locations
     except FileNotFoundError:
         print(f"Warning: Active vehicles file not found at {filepath}")
         print("Proceeding without vehicle availability constraints.")
-        return None
+        return None, None, None, None
     except Exception as e:
         print(f"Warning: Error loading active vehicles: {e}")
         print("Proceeding without vehicle availability constraints.")
-        return None
+        return None, None, None, None
 
 
 class Load:
@@ -164,21 +190,31 @@ class Load:
         self.dropoff_lat = row['dropoff_lat']
         self.dropoff_lng = row['dropoff_lng']
         self.duration_hours = row['duration_hours']
+        self.vehicle_type = row.get('vehicle_type', None)  # Vehicle type requirement
+        # Additional fields for display
+        self.pickup_city = row.get('pickup_city', None)
+        self.destination_city = row.get('destination_city', None)
+        self.status = row.get('status', None)
+        self.rental = row.get('rental', None)
 
     def __repr__(self):
-        return f"Load({self.key}, revenue=${self.revenue}, pickup={self.pickup_date})"
+        return f"Load({self.key}, revenue=${self.revenue}, pickup={self.pickup_date}, type={self.vehicle_type})"
 
 
 class Vehicle:
     """Represents a vehicle with its assigned loads."""
 
-    def __init__(self, vehicle_id):
-        self.id = vehicle_id  # Now uses actual vehicle key (e.g., vch12ee26e3c19adf9c)
+    def __init__(self, vehicle_id, vehicle_type=None, license_plate=None):
+        self.id = vehicle_id  # Vehicle key (e.g., vch12ee26e3c19adf9c)
+        self.vehicle_type = vehicle_type  # Vehicle type (e.g., Flatbed, Curtain Sides)
+        self.license_plate = license_plate  # License plate for display (e.g., "1174 VRA")
         self.loads = []
         self.total_revenue = 0
         self.current_lat = None
         self.current_lng = None
         self.available_at = None
+        self.initial_lat = None  # Initial location for first load
+        self.initial_lng = None  # Initial location for first load
 
     def can_assign_load(self, load, avg_speed_kmh=60, active_vehicles_by_date=None):
         """
@@ -192,6 +228,11 @@ class Vehicle:
         Returns:
             True if load can be assigned, False otherwise
         """
+        # Check vehicle type compatibility
+        if load.vehicle_type and self.vehicle_type:
+            if load.vehicle_type != self.vehicle_type:
+                return False
+
         # If active vehicles data is provided, check if this vehicle was active on pickup date
         if active_vehicles_by_date is not None:
             pickup_date = load.pickup_date.date()  # Just the date, no time
@@ -200,8 +241,19 @@ class Vehicle:
                     return False
             # If date not in active_vehicles_by_date, we can't verify, so allow it
 
-        # If no loads assigned yet, can always assign (subject to active date check above)
+        # If no loads assigned yet, check if vehicle can reach from initial location
         if not self.loads:
+            # If vehicle has an initial location, check travel time from there
+            if self.initial_lat is not None and self.initial_lng is not None:
+                travel_time_hours = calculate_travel_time(
+                    self.initial_lat, self.initial_lng,
+                    load.pickup_lat, load.pickup_lng,
+                    avg_speed_kmh
+                )
+                # Assume vehicle is available at start of pickup date
+                # Vehicle needs to be able to reach pickup by pickup time
+                # This is a simplified check - in reality we'd need to know when vehicle finished previous load
+                return True  # Allow assignment if vehicle was active that day
             return True
 
         # Check if vehicle is available before pickup time
@@ -234,7 +286,9 @@ class Vehicle:
         self.available_at = load.dropoff_date
 
     def __repr__(self):
-        return f"Vehicle {self.id}: {len(self.loads)} loads, ${self.total_revenue} revenue"
+        type_str = f" ({self.vehicle_type})" if self.vehicle_type else ""
+        display_id = self.license_plate if self.license_plate else self.id
+        return f"Vehicle {display_id}{type_str}: {len(self.loads)} loads, ${self.total_revenue} revenue"
 
 
 def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weight=0.3,
@@ -262,7 +316,7 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
         List of Vehicle objects with assigned loads
     """
     # Load active vehicles data
-    active_vehicles_by_date = load_active_vehicles(active_vehicles_file)
+    active_vehicles_by_date, vehicle_types, vehicle_plates, vehicle_locations = load_active_vehicles(active_vehicles_file)
 
     # Convert DataFrame rows to Load objects
     loads = [Load(row) for _, row in loads_df.iterrows()]
@@ -280,8 +334,15 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
         for vehicle_set in active_vehicles_by_date.values():
             all_vehicle_keys.update(vehicle_set)
 
-        # Create Vehicle objects using actual vehicle keys
-        vehicles = [Vehicle(vehicle_key) for vehicle_key in sorted(all_vehicle_keys)]
+        # Create Vehicle objects using actual vehicle keys, their types, and license plates
+        vehicles = []
+        for vehicle_key in sorted(all_vehicle_keys):
+            vehicle = Vehicle(
+                vehicle_key,
+                vehicle_types.get(vehicle_key),
+                vehicle_plates.get(vehicle_key)
+            )
+            vehicles.append(vehicle)
         print(f"Loaded {len(vehicles)} vehicles from active_vehicles.csv")
     else:
         # Fallback to numbered vehicles if active vehicles file not available
@@ -311,8 +372,26 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
                         load.pickup_lat, load.pickup_lng
                     )
                 else:
-                    # No previous load, assume starting from pickup (zero deadmiles)
-                    deadmiles = 0
+                    # No previous load - check if vehicle has initial location for this date
+                    if vehicle_locations:
+                        pickup_date = load.pickup_date.date()
+                        location_key = (vehicle.id, pickup_date)
+                        if location_key in vehicle_locations:
+                            initial_lat, initial_lng = vehicle_locations[location_key]
+                            deadmiles = haversine_distance(
+                                initial_lat, initial_lng,
+                                load.pickup_lat, load.pickup_lng
+                            )
+                            # Store initial location in vehicle for use in assignment
+                            if vehicle.initial_lat is None:
+                                vehicle.initial_lat = initial_lat
+                                vehicle.initial_lng = initial_lng
+                        else:
+                            # No location data for this date, assume zero deadmiles
+                            deadmiles = 0
+                    else:
+                        # No location data available, assume zero deadmiles
+                        deadmiles = 0
 
                 # Scoring function:
                 # - Negative revenue balance (prefer lower revenue vehicles for distribution)
@@ -349,7 +428,8 @@ def generate_schedule_output(vehicles, output_file='schedule_output.csv'):
     for vehicle in vehicles:
         for i, load in enumerate(vehicle.loads):
             rows.append({
-                'vehicle_id': vehicle.id,
+                'vehicle_id': vehicle.license_plate if vehicle.license_plate else vehicle.id,
+                'vehicle_key': vehicle.id,  # Keep vehicle key for reference
                 'load_sequence': i + 1,
                 'load_key': load.key,
                 'load_id': load.id,
@@ -357,11 +437,15 @@ def generate_schedule_output(vehicles, output_file='schedule_output.csv'):
                 'revenue': load.revenue,
                 'pickup_date': load.pickup_date,
                 'dropoff_date': load.dropoff_date,
+                'pickup_city': load.pickup_city,
+                'destination_city': load.destination_city,
                 'pickup_lat': load.pickup_lat,
                 'pickup_lng': load.pickup_lng,
                 'dropoff_lat': load.dropoff_lat,
                 'dropoff_lng': load.dropoff_lng,
-                'duration_hours': load.duration_hours
+                'duration_hours': load.duration_hours,
+                'status': load.status,
+                'rental': load.rental
             })
 
     output_df = pd.DataFrame(rows)
@@ -449,12 +533,46 @@ def print_summary(vehicles, avg_speed_kmh=60, active_vehicles_by_date=None, load
 
     for vehicle in vehicles:
         if vehicle.loads:
-            print(f"  Vehicle {vehicle.id}: {len(vehicle.loads)} loads, "
+            type_str = f" ({vehicle.vehicle_type})" if vehicle.vehicle_type else ""
+            print(f"  Vehicle {vehicle.id}{type_str}: {len(vehicle.loads)} loads, "
                   f"SAR {vehicle.total_revenue:,.2f} revenue")
         else:
-            print(f"  Vehicle {vehicle.id}: No loads assigned")
+            type_str = f" ({vehicle.vehicle_type})" if vehicle.vehicle_type else ""
+            print(f"  Vehicle {vehicle.id}{type_str}: No loads assigned")
 
     print("=" * 80 + "\n")
+
+
+def calculate_month_statistics_by_vehicle_type(vehicles, avg_speed_kmh=60, active_vehicles_by_date=None, loads_df=None):
+    """
+    Calculate statistics for a month's schedule, broken down by vehicle type.
+
+    Args:
+        vehicles: List of Vehicle objects with assigned loads
+        avg_speed_kmh: Average speed for travel time calculation
+        active_vehicles_by_date: Dictionary mapping date -> set of active vehicle keys
+        loads_df: DataFrame with loads for this month (to determine date range)
+
+    Returns:
+        List of dictionaries with statistics, one per vehicle type
+    """
+    # Group vehicles by type
+    vehicles_by_type = {}
+    for vehicle in vehicles:
+        vtype = vehicle.vehicle_type or 'Unknown'
+        if vtype not in vehicles_by_type:
+            vehicles_by_type[vtype] = []
+        vehicles_by_type[vtype].append(vehicle)
+
+    # Calculate stats for each vehicle type
+    all_stats = []
+
+    for vtype, vtype_vehicles in vehicles_by_type.items():
+        stats = calculate_month_statistics(vtype_vehicles, avg_speed_kmh, active_vehicles_by_date, loads_df)
+        stats['vehicle_type'] = vtype
+        all_stats.append(stats)
+
+    return all_stats
 
 
 def calculate_month_statistics(vehicles, avg_speed_kmh=60, active_vehicles_by_date=None, loads_df=None):
@@ -548,7 +666,7 @@ def process_single_month(loads_df, num_vehicles, avg_speed_kmh, output_file, dea
         Statistics dictionary
     """
     # Load active vehicles data
-    active_vehicles_by_date = load_active_vehicles(active_vehicles_file)
+    active_vehicles_by_date, vehicle_types, _, _ = load_active_vehicles(active_vehicles_file)
 
     vehicles = schedule_loads(loads_df, num_vehicles, avg_speed_kmh, deadmile_weight, active_vehicles_file)
     generate_schedule_output(vehicles, output_file)
@@ -665,9 +783,18 @@ def main():
             output_file = f"outputs/schedules/schedule_{month_slug}.csv"
 
             # Process this month
-            stats = process_single_month(month_df, args.num_vehicles, args.speed, output_file,
-                                        args.deadmile_weight, args.active_vehicles)
-            all_month_stats.append(stats)
+            vehicles = schedule_loads(month_df, args.num_vehicles, args.speed, args.deadmile_weight, args.active_vehicles)
+            generate_schedule_output(vehicles, output_file)
+
+            # Load active vehicles for stats calculation
+            active_vehicles_by_date_temp, _, _, _ = load_active_vehicles(args.active_vehicles)
+
+            # Get stats broken down by vehicle type
+            stats_by_type = calculate_month_statistics_by_vehicle_type(vehicles, args.speed, active_vehicles_by_date_temp, month_df)
+            all_month_stats.extend(stats_by_type)
+
+            # Also calculate overall stats for printing
+            stats = stats_by_type[0] if len(stats_by_type) == 1 else calculate_month_statistics(vehicles, args.speed, active_vehicles_by_date_temp, month_df)
 
             # Print this month's summary
             print(f"\nMonth: {stats['month']}")
@@ -708,7 +835,7 @@ def main():
         print(f"Using average speed of {args.speed} km/h for travel time calculations\n")
 
         # Load active vehicles data
-        active_vehicles_by_date = load_active_vehicles(args.active_vehicles)
+        active_vehicles_by_date, vehicle_types, _, _ = load_active_vehicles(args.active_vehicles)
 
         # Run scheduling algorithm
         vehicles = schedule_loads(loads_df, args.num_vehicles, args.speed, args.deadmile_weight, args.active_vehicles)
