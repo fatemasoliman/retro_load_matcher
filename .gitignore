@@ -6,9 +6,11 @@ outputs/
 !outputs/schedules/.gitkeep
 !outputs/visualizations/.gitkeep
 
-# Input data files (uncomment to ignore)
-# inputs/loads.csv
-# inputs/actual.csv
+# Data files - ignore all CSV files (input and output)
+*.csv
+inputs/*.csv
+outputs/*.csv
+**/*.csv
 
 # Python
 venv/
