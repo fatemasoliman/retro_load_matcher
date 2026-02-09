@@ -196,6 +196,12 @@ class Load:
         self.dropoff_lng = row['dropoff_lng']
         self.duration_hours = row['duration_hours']
         self.vehicle_type = row.get('vehicle_type', None)  # Vehicle type requirement
+        # Parse gb_per_day_median as float
+        gb_per_day_val = row.get('gb_per_day_median', 0)
+        try:
+            self.gb_per_day_median = float(parse_number(gb_per_day_val)) if gb_per_day_val else 0
+        except (ValueError, TypeError):
+            self.gb_per_day_median = 0
         # Additional fields for display
         self.pickup_city = row.get('pickup_city', None)
         self.destination_city = row.get('destination_city', None)
@@ -333,8 +339,8 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
 
     # Sort loads chronologically by pickup_date, then by optimization metric as tiebreaker
     if optimize_price_per_day:
-        # Sort by pickup date, then price per day (descending)
-        loads.sort(key=lambda l: (l.pickup_date, -(l.revenue / (l.duration_hours / 24) if l.duration_hours > 0 else 0)))
+        # Sort by pickup date, then gb_per_day_median (descending)
+        loads.sort(key=lambda l: (l.pickup_date, -l.gb_per_day_median))
     else:
         # Sort by pickup date, then revenue (descending)
         loads.sort(key=lambda l: (l.pickup_date, -l.revenue))
@@ -425,17 +431,16 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
 
                 # Scoring function
                 if optimize_price_per_day:
-                    # Optimize for price per duration day
-                    # Calculate revenue per day for this load
-                    duration_days = load.duration_hours / 24 if load.duration_hours > 0 else 1
-                    price_per_day = load.revenue / duration_days
+                    # Optimize for gb_per_day_median
+                    # Use the pre-calculated revenue per day from the data
+                    gb_per_day = load.gb_per_day_median
 
                     # Factor in deadmiles as a penalty
                     avg_revenue_per_km = load.revenue / load.distance if load.distance > 0 else 0
                     deadmile_penalty = deadmiles * avg_revenue_per_km
 
-                    # Score: prioritize high price/day, penalize deadmiles
-                    score = price_per_day - (deadmile_weight * deadmile_penalty)
+                    # Score: prioritize high gb/day, penalize deadmiles
+                    score = gb_per_day - (deadmile_weight * deadmile_penalty)
                 else:
                     # Standard optimization: balance revenue distribution and deadmiles
                     # - Negative revenue balance (prefer lower revenue vehicles for distribution)

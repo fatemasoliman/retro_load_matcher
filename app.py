@@ -213,9 +213,12 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
                     'Entity': '',
                     'Pickup_City': '',
                     'Destination_City': '',
+                    'Pickup_Date': None,
+                    'Dropoff_Date': None,
                     'Status': '',
                     'Rental': '',
-                    'Duration_Hours': 0
+                    'Duration_Hours': 0,
+                    'GB_Per_Day_Median': 0
                 })
 
             # Add load
@@ -230,9 +233,12 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
                 'Entity': load.get('entity', 'N/A'),
                 'Pickup_City': load.get('pickup_city', 'N/A'),
                 'Destination_City': load.get('destination_city', 'N/A'),
+                'Pickup_Date': load['pickup_date'],
+                'Dropoff_Date': load['dropoff_date'],
                 'Status': load.get('status', 'N/A'),
                 'Rental': 'Yes' if load.get('rental') else 'No',
-                'Duration_Hours': load.get('duration_hours', 0)
+                'Duration_Hours': load.get('duration_hours', 0),
+                'GB_Per_Day_Median': load.get('gb_per_day_median', 0)
             })
 
             prev_dropoff_date = load['dropoff_date']
@@ -281,9 +287,12 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
                         'Entity': '',
                         'Pickup_City': '',
                         'Destination_City': '',
+                        'Pickup_Date': None,
+                        'Dropoff_Date': None,
                         'Status': '',
                         'Rental': '',
-                        'Duration_Hours': 0
+                        'Duration_Hours': 0,
+                        'GB_Per_Day_Median': 0
                     })
                     current_start = date
                     prev_date = date
@@ -300,9 +309,12 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
                 'Entity': '',
                 'Pickup_City': '',
                 'Destination_City': '',
+                'Pickup_Date': None,
+                'Dropoff_Date': None,
                 'Status': '',
                 'Rental': '',
-                'Duration_Hours': 0
+                'Duration_Hours': 0,
+                'GB_Per_Day_Median': 0
             })
 
     gantt_df = pd.DataFrame(gantt_data)
@@ -339,6 +351,11 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
             elif destination and str(destination).strip() and str(destination) not in ['nan', 'N/A', 'None']:
                 parts.append(f"To: {destination}")
 
+            # Pickup date with time
+            if row.get('Pickup_Date') is not None and not pd.isna(row['Pickup_Date']):
+                pickup_date = pd.to_datetime(row['Pickup_Date'])
+                parts.append(f"Pickup: {pickup_date.strftime('%b %d, %Y %H:%M')}")
+
             # Revenue - always show
             if row['Revenue'] and row['Revenue'] > 0:
                 parts.append(f"Revenue: SAR {row['Revenue']:,.0f}")
@@ -351,11 +368,9 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
                 else:
                     parts.append(f"Duration: {row['Duration_Hours']:.1f} hours")
 
-                # Price per day
-                if row['Revenue'] and row['Revenue'] > 0:
-                    price_per_day = row['Revenue'] / duration_days if duration_days > 0 else 0
-                    if price_per_day > 0:
-                        parts.append(f"Price/Day: SAR {price_per_day:,.0f}")
+            # GB per day (median)
+            if row.get('GB_Per_Day_Median') and row['GB_Per_Day_Median'] > 0:
+                parts.append(f"GB/Day: SAR {row['GB_Per_Day_Median']:,.0f}")
 
             # Status
             if row['Status'] and str(row['Status']).strip() and str(row['Status']) not in ['nan', 'N/A', 'None']:
@@ -848,7 +863,8 @@ def main():
                                 'dropoff_lng': load.dropoff_lng,
                                 'duration_hours': load.duration_hours,
                                 'status': load.status,
-                                'rental': load.rental
+                                'rental': load.rental,
+                                'gb_per_day_median': load.gb_per_day_median
                             })
 
                     schedule_month_df = pd.DataFrame(schedule_rows)
@@ -1059,6 +1075,9 @@ def main():
             except Exception:
                 active_vehicles_for_stats = None
 
+            # Load actuals data for comparison
+            actuals_data = load_actuals_data()
+
             # Prepare combined metrics table
             all_metrics_data = []
 
@@ -1105,9 +1124,9 @@ def main():
             total_km_all = stats_df['total_km'].sum()
             avg_revenue_per_load_all = total_revenue_all / total_loads_all if total_loads_all > 0 else 0
 
-            # Add Total row
+            # Add Total row (Simulated)
             all_metrics_data.append({
-                'Vehicle Type': 'Total (All Types)',
+                'Vehicle Type': 'Total (All Types) - Simulated',
                 'Total Revenue': f"SAR {total_revenue_all:,.0f}",
                 'Num Vehicles': f"{total_vehicles_all:.0f}",
                 'Total Loads': f"{total_loads_all:.0f}",
@@ -1117,6 +1136,83 @@ def main():
                 'Total Kilometers': f"{total_km_all:,.0f}",
                 'Loaded/Total Ratio': f"{loaded_ratio_all:.1f}%"
             })
+
+            # Add Total Actual and Difference rows if actuals data available
+            if actuals_data is not None:
+                # Calculate actuals for Total (All Types)
+                actuals_filtered_all = actuals_data[actuals_data['month_name'].isin(stats_df['month'].unique())]
+                if not actuals_filtered_all.empty:
+                    actual_revenue_all = actuals_filtered_all['gb'].sum()
+                    actual_loads_all = actuals_filtered_all['loads'].sum()
+                    actual_vehicles_all = actuals_filtered_all['vehicles'].sum()
+                    actual_avg_revenue_per_load_all = actual_revenue_all / actual_loads_all if actual_loads_all > 0 else 0
+
+                    # Calculate actual vehicle-days using actual active days from active_vehicles.csv
+                    actual_vehicle_days_all = 0
+                    for month in stats_df['month'].unique():
+                        # Count actual active vehicle-days for this month from active_vehicles.csv
+                        if active_vehicles_for_stats is not None:
+                            try:
+                                month_dt = pd.to_datetime(month)
+                                month_start = month_dt.replace(day=1)
+                                month_end = (month_start + pd.DateOffset(months=1)) - pd.DateOffset(days=1)
+
+                                month_active = active_vehicles_for_stats[
+                                    (active_vehicles_for_stats['active_date'] >= month_start) &
+                                    (active_vehicles_for_stats['active_date'] <= month_end)
+                                ]
+                                actual_vehicle_days_all += len(month_active)
+                            except:
+                                # Fallback to old calculation
+                                month_actuals = actuals_filtered_all[actuals_filtered_all['month_name'] == month]
+                                if not month_actuals.empty:
+                                    month_dt = pd.to_datetime(month)
+                                    days_in_month = month_dt.days_in_month
+                                    actual_vehicle_days_all += month_actuals['vehicles'].sum() * days_in_month
+                        else:
+                            # Fallback if active_vehicles.csv not available
+                            month_actuals = actuals_filtered_all[actuals_filtered_all['month_name'] == month]
+                            if not month_actuals.empty:
+                                try:
+                                    month_dt = pd.to_datetime(month)
+                                    days_in_month = month_dt.days_in_month
+                                    actual_vehicle_days_all += month_actuals['vehicles'].sum() * days_in_month
+                                except:
+                                    actual_vehicle_days_all += month_actuals['vehicles'].sum() * 30
+
+                    actual_rev_per_vehicle_per_day_all = actual_revenue_all / actual_vehicle_days_all if actual_vehicle_days_all > 0 else 0
+
+                    # Add Actual row
+                    all_metrics_data.append({
+                        'Vehicle Type': 'Total (All Types) - Actual',
+                        'Total Revenue': f"SAR {actual_revenue_all:,.0f}",
+                        'Num Vehicles': f"{actual_vehicles_all:.0f}",
+                        'Total Loads': f"{actual_loads_all:.0f}",
+                        'Total Idle Days': "N/A",
+                        'Avg Revenue/Load': f"SAR {actual_avg_revenue_per_load_all:,.0f}",
+                        'Revenue/Vehicle/Day': f"SAR {actual_rev_per_vehicle_per_day_all:,.0f}",
+                        'Total Kilometers': "N/A",
+                        'Loaded/Total Ratio': "N/A"
+                    })
+
+                    # Add Difference row (Simulated - Actual)
+                    diff_revenue = total_revenue_all - actual_revenue_all
+                    diff_vehicles = total_vehicles_all - actual_vehicles_all
+                    diff_loads = total_loads_all - actual_loads_all
+                    diff_avg_rev_per_load = avg_revenue_per_load_all - actual_avg_revenue_per_load_all
+                    diff_rev_per_veh_per_day = revenue_per_vehicle_per_day_all - actual_rev_per_vehicle_per_day_all
+
+                    all_metrics_data.append({
+                        'Vehicle Type': 'Total (All Types) - Difference',
+                        'Total Revenue': f"SAR {diff_revenue:+,.0f}",
+                        'Num Vehicles': f"{diff_vehicles:+.0f}",
+                        'Total Loads': f"{diff_loads:+.0f}",
+                        'Total Idle Days': "N/A",
+                        'Avg Revenue/Load': f"SAR {diff_avg_rev_per_load:+,.0f}",
+                        'Revenue/Vehicle/Day': f"SAR {diff_rev_per_veh_per_day:+,.0f}",
+                        'Total Kilometers': "N/A",
+                        'Loaded/Total Ratio': "N/A"
+                    })
 
             # Add breakdown by vehicle type
             for vehicle_type in sorted(stats_df['vehicle_type'].unique()):
@@ -1165,9 +1261,9 @@ def main():
                 loaded_ratio = (type_stats['total_loaded_km'].sum() / type_stats['total_km'].sum() * 100) if type_stats['total_km'].sum() > 0 else 0
                 avg_revenue_per_load = total_revenue / total_loads if total_loads > 0 else 0
 
-                # Add vehicle type row
+                # Add vehicle type row (Simulated)
                 all_metrics_data.append({
-                    'Vehicle Type': vehicle_type,
+                    'Vehicle Type': f"{vehicle_type} - Simulated",
                     'Total Revenue': f"SAR {total_revenue:,.0f}",
                     'Num Vehicles': f"{num_vehicles_type:.0f}",
                     'Total Loads': f"{total_loads:.0f}",
@@ -1178,9 +1274,97 @@ def main():
                     'Loaded/Total Ratio': f"{loaded_ratio:.1f}%"
                 })
 
+                # Add Actual and Difference rows for this vehicle type if actuals data available
+                if actuals_data is not None:
+                    actuals_type = actuals_data[
+                        (actuals_data['vehicle_type'] == vehicle_type) &
+                        (actuals_data['month_name'].isin(type_stats['month'].unique()))
+                    ]
+                    if not actuals_type.empty:
+                        actual_revenue_type = actuals_type['gb'].sum()
+                        actual_loads_type = actuals_type['loads'].sum()
+                        actual_vehicles_type = actuals_type['vehicles'].sum()
+                        actual_avg_revenue_per_load_type = actual_revenue_type / actual_loads_type if actual_loads_type > 0 else 0
+
+                        # Calculate actual vehicle-days for this type using actual active days from active_vehicles.csv
+                        actual_vehicle_days_type = 0
+                        for month in type_stats['month'].unique():
+                            # Count actual active vehicle-days for this month and vehicle type from active_vehicles.csv
+                            if active_vehicles_for_stats is not None:
+                                try:
+                                    month_dt = pd.to_datetime(month)
+                                    month_start = month_dt.replace(day=1)
+                                    month_end = (month_start + pd.DateOffset(months=1)) - pd.DateOffset(days=1)
+
+                                    month_active_type = active_vehicles_for_stats[
+                                        (active_vehicles_for_stats['active_date'] >= month_start) &
+                                        (active_vehicles_for_stats['active_date'] <= month_end) &
+                                        (active_vehicles_for_stats['vehicle_type'] == vehicle_type)
+                                    ]
+                                    actual_vehicle_days_type += len(month_active_type)
+                                except:
+                                    # Fallback to old calculation
+                                    month_actuals = actuals_type[actuals_type['month_name'] == month]
+                                    if not month_actuals.empty:
+                                        month_dt = pd.to_datetime(month)
+                                        days_in_month = month_dt.days_in_month
+                                        actual_vehicle_days_type += month_actuals['vehicles'].sum() * days_in_month
+                            else:
+                                # Fallback if active_vehicles.csv not available
+                                month_actuals = actuals_type[actuals_type['month_name'] == month]
+                                if not month_actuals.empty:
+                                    try:
+                                        month_dt = pd.to_datetime(month)
+                                        days_in_month = month_dt.days_in_month
+                                        actual_vehicle_days_type += month_actuals['vehicles'].sum() * days_in_month
+                                    except:
+                                        actual_vehicle_days_type += month_actuals['vehicles'].sum() * 30
+
+                        actual_rev_per_vehicle_per_day_type = actual_revenue_type / actual_vehicle_days_type if actual_vehicle_days_type > 0 else 0
+
+                        # Add Actual row
+                        all_metrics_data.append({
+                            'Vehicle Type': f"{vehicle_type} - Actual",
+                            'Total Revenue': f"SAR {actual_revenue_type:,.0f}",
+                            'Num Vehicles': f"{actual_vehicles_type:.0f}",
+                            'Total Loads': f"{actual_loads_type:.0f}",
+                            'Total Idle Days': "N/A",
+                            'Avg Revenue/Load': f"SAR {actual_avg_revenue_per_load_type:,.0f}",
+                            'Revenue/Vehicle/Day': f"SAR {actual_rev_per_vehicle_per_day_type:,.0f}",
+                            'Total Kilometers': "N/A",
+                            'Loaded/Total Ratio': "N/A"
+                        })
+
+                        # Add Difference row (Simulated - Actual)
+                        diff_revenue_type = total_revenue - actual_revenue_type
+                        diff_vehicles_type = num_vehicles_type - actual_vehicles_type
+                        diff_loads_type = total_loads - actual_loads_type
+                        diff_avg_rev_per_load_type = avg_revenue_per_load - actual_avg_revenue_per_load_type
+                        diff_rev_per_veh_per_day_type = revenue_per_vehicle_per_day - actual_rev_per_vehicle_per_day_type
+
+                        all_metrics_data.append({
+                            'Vehicle Type': f"{vehicle_type} - Difference",
+                            'Total Revenue': f"SAR {diff_revenue_type:+,.0f}",
+                            'Num Vehicles': f"{diff_vehicles_type:+.0f}",
+                            'Total Loads': f"{diff_loads_type:+.0f}",
+                            'Total Idle Days': "N/A",
+                            'Avg Revenue/Load': f"SAR {diff_avg_rev_per_load_type:+,.0f}",
+                            'Revenue/Vehicle/Day': f"SAR {diff_rev_per_veh_per_day_type:+,.0f}",
+                            'Total Kilometers': "N/A",
+                            'Loaded/Total Ratio': "N/A"
+                        })
+
             # Display combined metrics table
             combined_metrics_df = pd.DataFrame(all_metrics_data)
-            st.dataframe(combined_metrics_df, width='stretch', hide_index=True)
+
+            # Apply styling to shade difference rows
+            def highlight_difference_rows(row):
+                if 'Difference' in str(row['Vehicle Type']):
+                    return ['background-color: #f0f0f0'] * len(row)
+                return [''] * len(row)
+
+            styled_df = combined_metrics_df.style.apply(highlight_difference_rows, axis=1)
+            st.dataframe(styled_df, width='stretch', hide_index=True)
 
             st.markdown("---")
 
@@ -1470,7 +1654,7 @@ def main():
                     'load_sequence', 'load_id', 'load_key', 'entity',
                     'pickup_city', 'destination_city',
                     'pickup_date', 'dropoff_date', 'duration_hours',
-                    'revenue', 'status', 'rental',
+                    'revenue', 'gb_per_day_median', 'status', 'rental',
                     'pickup_lat', 'pickup_lng', 'dropoff_lat', 'dropoff_lng'
                 ]
 
@@ -1483,21 +1667,6 @@ def main():
                     assignments_display['rental'] = assignments_display['rental'].apply(
                         lambda x: 'True' if x else 'False'
                     )
-
-                # Calculate price per day
-                if 'revenue' in assignments_display.columns and 'duration_hours' in assignments_display.columns:
-                    assignments_display['price_per_day'] = assignments_display.apply(
-                        lambda row: row['revenue'] / (row['duration_hours'] / 24) if row['duration_hours'] > 0 else 0,
-                        axis=1
-                    )
-
-                    # Reorder columns to place price_per_day after revenue
-                    cols = list(assignments_display.columns)
-                    if 'price_per_day' in cols and 'revenue' in cols:
-                        cols.remove('price_per_day')
-                        revenue_idx = cols.index('revenue')
-                        cols.insert(revenue_idx + 1, 'price_per_day')
-                        assignments_display = assignments_display[cols]
 
                 # Sort by month, vehicle type, vehicle, and load sequence
                 sort_columns = ['month', 'vehicle_type']
@@ -1523,7 +1692,7 @@ def main():
                     'dropoff_date': 'Dropoff Date',
                     'duration_hours': 'Duration (hrs)',
                     'revenue': 'Selling Price (SAR)',
-                    'price_per_day': 'Price/Day (SAR)',
+                    'gb_per_day_median': 'GB/Day (SAR)',
                     'status': 'Status',
                     'rental': 'Rental',
                     'pickup_lat': 'Pickup Lat',
@@ -1536,7 +1705,7 @@ def main():
                 # Format the table
                 format_dict = {
                     'Selling Price (SAR)': '{:,.0f}',
-                    'Price/Day (SAR)': '{:,.0f}',
+                    'GB/Day (SAR)': '{:,.0f}',
                     'Duration (hrs)': '{:.1f}',
                     'Sequence': '{:.0f}',
                     'Pickup Lat': '{:.6f}',
