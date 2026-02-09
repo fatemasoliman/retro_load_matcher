@@ -141,6 +141,11 @@ def load_active_vehicles(filepath='inputs/active_vehicles.csv'):
         for _, row in df.iterrows():
             date = row['active_date'].date()  # Just the date, no time
             vehicle_key = row.get('VehicleKey', row.get('vehicle_key'))
+
+            # Skip rows with missing or invalid vehicle_key
+            if not vehicle_key or pd.isna(vehicle_key) or str(vehicle_key).strip() == '':
+                continue
+
             vehicle_type = row.get('vehicle_type', None)
             vehicle_plate = row.get('vehicle_plate', None)
             dropoff_lat = row.get('dropoff_lat', None)
@@ -292,7 +297,7 @@ class Vehicle:
 
 
 def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weight=0.3,
-                   active_vehicles_file='inputs/active_vehicles.csv'):
+                   active_vehicles_file='inputs/active_vehicles.csv', optimize_price_per_day=False):
     """
     Schedule loads across vehicles to maximize revenue and minimize deadmiles.
 
@@ -311,6 +316,8 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
                         Higher = more emphasis on reducing deadmiles
                         Lower = more emphasis on revenue balance
         active_vehicles_file: Path to active vehicles CSV file
+        optimize_price_per_day: If True, optimize for price per duration day instead of
+                               standard revenue & deadmiles optimization (default False)
 
     Returns:
         List of Vehicle objects with assigned loads
@@ -324,15 +331,33 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
     # Filter out loads with zero or negative duration
     loads = [l for l in loads if l.duration_hours > 0]
 
-    # Sort loads chronologically by pickup_date, then by revenue (descending) as tiebreaker
-    loads.sort(key=lambda l: (l.pickup_date, -l.revenue))
+    # Sort loads chronologically by pickup_date, then by optimization metric as tiebreaker
+    if optimize_price_per_day:
+        # Sort by pickup date, then price per day (descending)
+        loads.sort(key=lambda l: (l.pickup_date, -(l.revenue / (l.duration_hours / 24) if l.duration_hours > 0 else 0)))
+    else:
+        # Sort by pickup date, then revenue (descending)
+        loads.sort(key=lambda l: (l.pickup_date, -l.revenue))
 
     # Initialize vehicles based on active vehicles data
     if active_vehicles_by_date:
-        # Get all unique vehicle keys across all dates
-        all_vehicle_keys = set()
-        for vehicle_set in active_vehicles_by_date.values():
-            all_vehicle_keys.update(vehicle_set)
+        # Get the date range for the loads we're scheduling
+        if not loads_df.empty:
+            min_date = loads_df['pickup_date'].min().date()
+            max_date = loads_df['dropoff_date'].max().date() if 'dropoff_date' in loads_df.columns else loads_df['pickup_date'].max().date()
+
+            # Get unique vehicle keys active during this date range
+            all_vehicle_keys = set()
+            current_date = min_date
+            while current_date <= max_date:
+                if current_date in active_vehicles_by_date:
+                    all_vehicle_keys.update(active_vehicles_by_date[current_date])
+                current_date += timedelta(days=1)
+        else:
+            # Fallback: use all vehicles if no loads
+            all_vehicle_keys = set()
+            for vehicle_set in active_vehicles_by_date.values():
+                all_vehicle_keys.update(vehicle_set)
 
         # Create Vehicle objects using actual vehicle keys, their types, and license plates
         vehicles = []
@@ -343,7 +368,7 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
                 vehicle_plates.get(vehicle_key)
             )
             vehicles.append(vehicle)
-        print(f"Loaded {len(vehicles)} vehicles from active_vehicles.csv")
+        print(f"Loaded {len(vehicles)} vehicles active in this month from active_vehicles.csv")
     else:
         # Fallback to numbered vehicles if active vehicles file not available
         if num_vehicles is None:
@@ -352,6 +377,11 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
         print(f"Using {num_vehicles} numbered vehicles (active_vehicles.csv not available)")
 
     # Try to assign each load to a vehicle
+    unassigned_loads = []
+    vehicle_type_mismatches = 0
+    date_unavailable = 0
+    timing_issues = 0
+
     for load in loads:
         # Find all vehicles that can take this load
         compatible_vehicles = [v for v in vehicles if v.can_assign_load(load, avg_speed_kmh, active_vehicles_by_date)]
@@ -393,17 +423,30 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
                         # No location data available, assume zero deadmiles
                         deadmiles = 0
 
-                # Scoring function:
-                # - Negative revenue balance (prefer lower revenue vehicles for distribution)
-                # - Negative deadmiles (prefer shorter deadmiles)
-                # Weight deadmiles by typical revenue per km to make them comparable
-                avg_revenue_per_km = load.revenue / load.distance if load.distance > 0 else 0
-                deadmile_penalty = deadmiles * avg_revenue_per_km
+                # Scoring function
+                if optimize_price_per_day:
+                    # Optimize for price per duration day
+                    # Calculate revenue per day for this load
+                    duration_days = load.duration_hours / 24 if load.duration_hours > 0 else 1
+                    price_per_day = load.revenue / duration_days
 
-                # Score: balance load distribution and deadmile minimization
-                # Higher deadmile_weight = more emphasis on reducing deadmiles
-                revenue_weight = 1.0 - deadmile_weight
-                score = -(revenue_weight * vehicle.total_revenue) - (deadmile_weight * deadmile_penalty)
+                    # Factor in deadmiles as a penalty
+                    avg_revenue_per_km = load.revenue / load.distance if load.distance > 0 else 0
+                    deadmile_penalty = deadmiles * avg_revenue_per_km
+
+                    # Score: prioritize high price/day, penalize deadmiles
+                    score = price_per_day - (deadmile_weight * deadmile_penalty)
+                else:
+                    # Standard optimization: balance revenue distribution and deadmiles
+                    # - Negative revenue balance (prefer lower revenue vehicles for distribution)
+                    # - Negative deadmiles (prefer shorter deadmiles)
+                    avg_revenue_per_km = load.revenue / load.distance if load.distance > 0 else 0
+                    deadmile_penalty = deadmiles * avg_revenue_per_km
+
+                    # Score: balance load distribution and deadmile minimization
+                    # Higher deadmile_weight = more emphasis on reducing deadmiles
+                    revenue_weight = 1.0 - deadmile_weight
+                    score = -(revenue_weight * vehicle.total_revenue) - (deadmile_weight * deadmile_penalty)
 
                 if score > best_score:
                     best_score = score
@@ -411,6 +454,33 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
 
             if best_vehicle:
                 best_vehicle.assign_load(load)
+        else:
+            unassigned_loads.append(load)
+
+    # Print utilization summary
+    vehicles_with_loads = sum(1 for v in vehicles if len(v.loads) > 0)
+    print(f"\nVehicle Utilization Summary:")
+    print(f"  Total vehicles available: {len(vehicles)}")
+    print(f"  Vehicles used (with loads): {vehicles_with_loads}")
+    print(f"  Utilization rate: {vehicles_with_loads/len(vehicles)*100:.1f}%")
+
+    # Breakdown by vehicle type
+    vehicle_types_available = {}
+    vehicle_types_used = {}
+    for v in vehicles:
+        vtype = v.vehicle_type or 'Unknown'
+        vehicle_types_available[vtype] = vehicle_types_available.get(vtype, 0) + 1
+        if len(v.loads) > 0:
+            vehicle_types_used[vtype] = vehicle_types_used.get(vtype, 0) + 1
+
+    print(f"\nBy Vehicle Type:")
+    for vtype in sorted(vehicle_types_available.keys()):
+        available = vehicle_types_available[vtype]
+        used = vehicle_types_used.get(vtype, 0)
+        print(f"  {vtype}: {used}/{available} used ({used/available*100:.1f}%)")
+
+    if unassigned_loads:
+        print(f"\nWarning: {len(unassigned_loads)} loads could not be assigned to any vehicle")
 
     return vehicles
 
@@ -456,77 +526,29 @@ def generate_schedule_output(vehicles, output_file='schedule_output.csv'):
 
 def print_summary(vehicles, avg_speed_kmh=60, active_vehicles_by_date=None, loads_df=None):
     """Print summary statistics of the schedule."""
-    total_revenue = sum(v.total_revenue for v in vehicles)
-    total_loads = sum(len(v.loads) for v in vehicles)
-
-    # Calculate total loaded and unloaded kilometers
-    total_loaded_km = 0
-    total_unloaded_km = 0
-
-    # Get month from first load if available
-    month = None
-
-    for vehicle in vehicles:
-        if vehicle.loads:
-            # Get month from first load
-            if month is None:
-                month = vehicle.loads[0].pickup_date.strftime('%B %Y')
-
-            # Sum loaded kilometers (distance of each load)
-            for load in vehicle.loads:
-                total_loaded_km += load.distance
-
-            # Calculate unloaded kilometers (travel between loads)
-            for i in range(len(vehicle.loads) - 1):
-                current_load = vehicle.loads[i]
-                next_load = vehicle.loads[i + 1]
-
-                # Calculate distance from current dropoff to next pickup
-                unloaded_distance = haversine_distance(
-                    current_load.dropoff_lat, current_load.dropoff_lng,
-                    next_load.pickup_lat, next_load.pickup_lng
-                )
-                total_unloaded_km += unloaded_distance
-
-    total_km = total_loaded_km + total_unloaded_km
-
-    # Calculate per-vehicle revenue statistics
-    vehicle_revenues = [v.total_revenue for v in vehicles]
-    median_revenue = np.median(vehicle_revenues) if vehicle_revenues else 0
-    variance_revenue = np.var(vehicle_revenues) if vehicle_revenues else 0
-
-    # Count vehicles with loads
-    vehicles_with_loads = sum(1 for v in vehicles if len(v.loads) > 0)
-
-    # Count vehicles active in this month
-    num_vehicles_active_in_month = len(vehicles)  # default
-    if active_vehicles_by_date and loads_df is not None and not loads_df.empty:
-        # Get all unique vehicles that were active during any date in this month
-        unique_vehicles_in_month = set()
-        for date in loads_df['pickup_date'].dt.date.unique():
-            if date in active_vehicles_by_date:
-                unique_vehicles_in_month.update(active_vehicles_by_date[date])
-        num_vehicles_active_in_month = len(unique_vehicles_in_month)
+    # Calculate statistics using the same function used elsewhere
+    stats = calculate_month_statistics(vehicles, avg_speed_kmh, active_vehicles_by_date, loads_df)
 
     print("\n" + "=" * 80)
     print("SCHEDULING SUMMARY")
     print("=" * 80)
 
-    if month:
-        print(f"Month: {month}")
-    print(f"Number of vehicles: {num_vehicles_active_in_month}")
-    print(f"Number of vehicles used: {vehicles_with_loads}")
-    print(f"Number of loads assigned: {total_loads}")
-    print(f"Total loaded kilometers: {total_loaded_km:,.2f} km")
-    print(f"Total unloaded kilometers: {total_unloaded_km:,.2f} km")
-    print(f"Total kilometers (loaded + unloaded): {total_km:,.2f} km")
-    print(f"Loaded/Total ratio: {(total_loaded_km/total_km*100) if total_km > 0 else 0:.1f}%")
-    print(f"\nTotal revenue: SAR {total_revenue:,.2f}")
-    print(f"Revenue per vehicle used (mean): SAR {total_revenue / vehicles_with_loads if vehicles_with_loads > 0 else 0:,.2f}")
-    print(f"Revenue per vehicle (median): SAR {median_revenue:,.2f}")
-    print(f"Revenue per vehicle (variance): {variance_revenue:,.2f}")
-    if total_loads > 0:
-        print(f"Average revenue per load: SAR {total_revenue / total_loads:,.2f}")
+    if stats['month']:
+        print(f"Month: {stats['month']}")
+    print(f"Number of vehicles: {stats['num_vehicles']}")
+    print(f"Number of vehicles used: {stats['num_vehicles_used']}")
+    print(f"Number of loads assigned: {stats['num_loads']}")
+    print(f"Total idle days: {stats['total_idle_days']}")
+    print(f"Total loaded kilometers: {stats['total_loaded_km']:,.2f} km")
+    print(f"Total unloaded kilometers: {stats['total_unloaded_km']:,.2f} km")
+    print(f"Total kilometers (loaded + unloaded): {stats['total_km']:,.2f} km")
+    print(f"Loaded/Total ratio: {stats['loaded_ratio']:.1f}%")
+    print(f"\nTotal revenue: SAR {stats['total_revenue']:,.2f}")
+    print(f"Revenue per vehicle used (mean): SAR {stats['revenue_per_vehicle']:,.2f}")
+    print(f"Revenue per vehicle (median): SAR {stats['median_revenue_per_vehicle']:,.2f}")
+    print(f"Revenue per vehicle (variance): {stats['variance_revenue_per_vehicle']:,.2f}")
+    if stats['num_loads'] > 0:
+        print(f"Average revenue per load: SAR {stats['avg_revenue_per_load']:,.2f}")
 
     print("\nPer-vehicle breakdown:")
     print("-" * 80)
@@ -623,6 +645,9 @@ def calculate_month_statistics(vehicles, avg_speed_kmh=60, active_vehicles_by_da
     vehicles_with_loads = sum(1 for v in vehicles if len(v.loads) > 0)
 
     # Count vehicles active in this month
+    # Get the vehicle IDs from the vehicles list (already filtered by type if called from calculate_month_statistics_by_vehicle_type)
+    vehicle_ids_in_list = set(v.id for v in vehicles)
+
     num_vehicles_active_in_month = len(vehicles)  # default
     if active_vehicles_by_date and loads_df is not None and not loads_df.empty:
         # Get all unique vehicles that were active during any date in this month
@@ -630,7 +655,42 @@ def calculate_month_statistics(vehicles, avg_speed_kmh=60, active_vehicles_by_da
         for date in loads_df['pickup_date'].dt.date.unique():
             if date in active_vehicles_by_date:
                 unique_vehicles_in_month.update(active_vehicles_by_date[date])
-        num_vehicles_active_in_month = len(unique_vehicles_in_month)
+        # Filter to only count vehicles that are in our vehicle list (respects vehicle type filtering)
+        num_vehicles_active_in_month = len(unique_vehicles_in_month & vehicle_ids_in_list)
+
+    # Calculate idle days
+    total_idle_days = 0
+    if active_vehicles_by_date and loads_df is not None and not loads_df.empty:
+        # Get the date range for this month
+        month_start = loads_df['pickup_date'].min().date()
+        month_end = loads_df['dropoff_date'].max().date() if 'dropoff_date' in loads_df.columns else loads_df['pickup_date'].max().date()
+
+        # For each vehicle, count idle days
+        for vehicle in vehicles:
+            # Get all dates this vehicle was active
+            vehicle_active_dates = set()
+            current_date = month_start
+            while current_date <= month_end:
+                if current_date in active_vehicles_by_date and vehicle.id in active_vehicles_by_date[current_date]:
+                    vehicle_active_dates.add(current_date)
+                current_date += timedelta(days=1)
+
+            # Check each active date to see if vehicle had a load
+            for active_date in vehicle_active_dates:
+                # Check if any load overlaps with this date
+                has_load_on_date = False
+                for load in vehicle.loads:
+                    load_start_date = load.pickup_date.date()
+                    load_end_date = load.dropoff_date.date()
+
+                    # Check if the load overlaps with this active date
+                    if load_start_date <= active_date <= load_end_date:
+                        has_load_on_date = True
+                        break
+
+                # If no load on this date, it's an idle day
+                if not has_load_on_date:
+                    total_idle_days += 1
 
     return {
         'month': month,
@@ -645,7 +705,8 @@ def calculate_month_statistics(vehicles, avg_speed_kmh=60, active_vehicles_by_da
         'revenue_per_vehicle': total_revenue / vehicles_with_loads if vehicles_with_loads > 0 else 0,
         'median_revenue_per_vehicle': median_revenue,
         'variance_revenue_per_vehicle': variance_revenue,
-        'avg_revenue_per_load': total_revenue / total_loads if total_loads > 0 else 0
+        'avg_revenue_per_load': total_revenue / total_loads if total_loads > 0 else 0,
+        'total_idle_days': total_idle_days
     }
 
 
@@ -800,6 +861,7 @@ def main():
             print(f"\nMonth: {stats['month']}")
             print(f"Number of vehicles: {stats['num_vehicles']}")
             print(f"Number of loads assigned: {stats['num_loads']}")
+            print(f"Total idle days: {stats['total_idle_days']}")
             print(f"Total loaded kilometers: {stats['total_loaded_km']:,.2f} km")
             print(f"Total unloaded kilometers: {stats['total_unloaded_km']:,.2f} km")
             print(f"Total kilometers: {stats['total_km']:,.2f} km")
