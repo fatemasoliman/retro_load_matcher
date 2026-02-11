@@ -194,9 +194,30 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
         prev_dropoff_lat = None
         prev_dropoff_lng = None
 
-        for _, load in vehicle_loads.iterrows():
-            # Add travel time if there's a previous load
+        # Get vehicle's initial location from active_vehicles.csv for first load travel time
+        initial_lat = None
+        initial_lng = None
+        try:
+            first_load = vehicle_loads.iloc[0]
+            # Try to get initial location from active_vehicles for first active day
+            first_pickup_date = first_load['pickup_date'].date()
+            month_dt = pd.to_datetime(month_name)
+            vehicle_first_day = active_vehicles_month[
+                (active_vehicles_month['VehicleKey'] == vehicle_id) &
+                (active_vehicles_month['active_date'].dt.date <= first_pickup_date)
+            ].sort_values('active_date')
+
+            if not vehicle_first_day.empty:
+                first_day_data = vehicle_first_day.iloc[0]
+                initial_lat = first_day_data.get('dropoff_lat')
+                initial_lng = first_day_data.get('dropoff_lng')
+        except Exception:
+            pass
+
+        for idx, (_, load) in enumerate(vehicle_loads.iterrows()):
+            # Add travel time
             if prev_dropoff_date is not None:
+                # Travel from previous load
                 travel_time_hours = (
                     haversine_distance(
                         prev_dropoff_lat, prev_dropoff_lng,
@@ -223,6 +244,40 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
                     'Duration_Hours': 0,
                     'GB_Per_Day_Median': 0
                 })
+            elif idx == 0 and initial_lat is not None and initial_lng is not None:
+                # Travel from initial location to first load
+                travel_time_hours = (
+                    haversine_distance(
+                        initial_lat, initial_lng,
+                        load['pickup_lat'], load['pickup_lng']
+                    ) / avg_speed_kmh
+                )
+
+                # Start travel from beginning of pickup day (assuming vehicle available from start of day)
+                pickup_day_start = load['pickup_date'].replace(hour=0, minute=0, second=0, microsecond=0)
+                travel_start = pickup_day_start
+                travel_end = travel_start + timedelta(hours=travel_time_hours)
+
+                # Only add if there's actually distance to travel
+                if travel_time_hours > 0.1:  # More than ~6 minutes
+                    gantt_data.append({
+                        'Vehicle': vehicle_label,
+                        'Task': f'Travel (from {origin_city})',
+                        'Start': travel_start,
+                        'Finish': travel_end,
+                        'Type': 'Travel',
+                        'Revenue': 0,
+                        'Load_ID': '',
+                        'Entity': '',
+                        'Pickup_City': origin_city,
+                        'Destination_City': load.get('pickup_city', 'N/A'),
+                        'Pickup_Date': None,
+                        'Dropoff_Date': None,
+                        'Status': '',
+                        'Rental': '',
+                        'Duration_Hours': 0,
+                        'GB_Per_Day_Median': 0
+                    })
 
             # Add load
             gantt_data.append({
