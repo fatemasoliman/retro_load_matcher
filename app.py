@@ -17,7 +17,7 @@ import platform
 # Import core scheduling functions
 from schedule_loads import (
     load_csv, load_active_vehicles, schedule_loads,
-    calculate_month_statistics, haversine_distance,
+    calculate_month_statistics, haversine_distance, get_route_distance,
     calculate_month_statistics_by_vehicle_type
 )
 
@@ -219,7 +219,7 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
             if prev_dropoff_date is not None:
                 # Travel from previous load
                 travel_time_hours = (
-                    haversine_distance(
+                    get_route_distance(
                         prev_dropoff_lat, prev_dropoff_lng,
                         load['pickup_lat'], load['pickup_lng']
                     ) / avg_speed_kmh
@@ -247,7 +247,7 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
             elif idx == 0 and initial_lat is not None and initial_lng is not None:
                 # Travel from initial location to first load
                 travel_time_hours = (
-                    haversine_distance(
+                    get_route_distance(
                         initial_lat, initial_lng,
                         load['pickup_lat'], load['pickup_lng']
                     ) / avg_speed_kmh
@@ -1553,7 +1553,7 @@ def main():
                         for _, load in vehicle_loads.iterrows():
                             # Add travel distance if not first load (deadmiles)
                             if prev_dropoff_lat is not None:
-                                travel_km = haversine_distance(
+                                travel_km = get_route_distance(
                                     prev_dropoff_lat, prev_dropoff_lng,
                                     load['pickup_lat'], load['pickup_lng']
                                 )
@@ -1561,7 +1561,7 @@ def main():
                                 total_km += travel_km
 
                             # Add load distance (loaded kilometers)
-                            load_km = haversine_distance(
+                            load_km = get_route_distance(
                                 load['pickup_lat'], load['pickup_lng'],
                                 load['dropoff_lat'], load['dropoff_lng']
                             )

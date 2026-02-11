@@ -11,11 +11,20 @@ from math import radians, cos, sin, asin, sqrt
 import argparse
 import sys
 import os
+import requests
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Cache for distance calculations to avoid repeated API calls
+_distance_cache = {}
 
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     """
     Calculate the great circle distance between two points on earth (in kilometers).
+    Used as fallback when OpenRouteService API is unavailable.
 
     Args:
         lat1, lon1: Latitude and longitude of point 1
@@ -39,9 +48,78 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     return c * r
 
 
+def get_route_distance(lat1, lon1, lat2, lon2):
+    """
+    Get actual driving distance between two points using OpenRouteService API.
+    Falls back to haversine distance if API call fails.
+
+    Args:
+        lat1, lon1: Starting point coordinates
+        lat2, lon2: Ending point coordinates
+
+    Returns:
+        Distance in kilometers (actual road distance)
+    """
+    # Create cache key
+    cache_key = (round(lat1, 6), round(lon1, 6), round(lat2, 6), round(lon2, 6))
+
+    # Check cache first
+    if cache_key in _distance_cache:
+        return _distance_cache[cache_key]
+
+    # Get API key from environment
+    api_key = os.getenv('OPENROUTESERVICE_API_KEY')
+
+    if not api_key:
+        # No API key, fall back to haversine
+        distance = haversine_distance(lat1, lon1, lat2, lon2)
+        _distance_cache[cache_key] = distance
+        return distance
+
+    try:
+        # OpenRouteService API endpoint
+        url = 'https://api.openrouteservice.org/v2/directions/driving-car'
+
+        # Request payload
+        headers = {
+            'Authorization': api_key,
+            'Content-Type': 'application/json'
+        }
+
+        body = {
+            'coordinates': [[lon1, lat1], [lon2, lat2]],
+            'units': 'km'
+        }
+
+        # Make API request with timeout
+        response = requests.post(url, json=body, headers=headers, timeout=5)
+
+        if response.status_code == 200:
+            data = response.json()
+            # Distance is in meters, convert to km
+            distance_km = data['routes'][0]['summary']['distance'] / 1000
+
+            # Cache the result
+            _distance_cache[cache_key] = distance_km
+            return distance_km
+        else:
+            # API error, fall back to haversine
+            print(f"OpenRouteService API error (status {response.status_code}), using haversine fallback")
+            distance = haversine_distance(lat1, lon1, lat2, lon2)
+            _distance_cache[cache_key] = distance
+            return distance
+
+    except Exception as e:
+        # Any error (timeout, network, etc.), fall back to haversine
+        print(f"OpenRouteService API error ({str(e)}), using haversine fallback")
+        distance = haversine_distance(lat1, lon1, lat2, lon2)
+        _distance_cache[cache_key] = distance
+        return distance
+
+
 def calculate_travel_time(lat1, lon1, lat2, lon2, avg_speed_kmh=60):
     """
-    Calculate travel time between two points in hours.
+    Calculate travel time between two points in hours using actual road distance.
 
     Args:
         lat1, lon1: Starting point coordinates
@@ -51,7 +129,7 @@ def calculate_travel_time(lat1, lon1, lat2, lon2, avg_speed_kmh=60):
     Returns:
         Travel time in hours
     """
-    distance = haversine_distance(lat1, lon1, lat2, lon2)
+    distance = get_route_distance(lat1, lon1, lat2, lon2)
     return distance / avg_speed_kmh
 
 
@@ -240,7 +318,7 @@ class Vehicle:
         if not self.loads:
             if self.initial_lat is not None and self.initial_lng is not None:
                 # Calculate deadmile distance from initial location to pickup
-                deadmile_distance = haversine_distance(
+                deadmile_distance = get_route_distance(
                     self.initial_lat, self.initial_lng,
                     load.pickup_lat, load.pickup_lng
                 )
@@ -266,7 +344,7 @@ class Vehicle:
             return False
 
         # Calculate deadmile distance from last dropoff to new pickup
-        deadmile_distance = haversine_distance(
+        deadmile_distance = get_route_distance(
             self.current_lat, self.current_lng,
             load.pickup_lat, load.pickup_lng
         )
@@ -413,14 +491,14 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
             for vehicle in compatible_vehicles:
                 # Calculate deadmiles (distance from last dropoff to new pickup)
                 if vehicle.loads:
-                    deadmiles = haversine_distance(
+                    deadmiles = get_route_distance(
                         vehicle.current_lat, vehicle.current_lng,
                         load.pickup_lat, load.pickup_lng
                     )
                 else:
                     # No previous load - use vehicle's initial location from first active day
                     if vehicle.initial_lat is not None and vehicle.initial_lng is not None:
-                        deadmiles = haversine_distance(
+                        deadmiles = get_route_distance(
                             vehicle.initial_lat, vehicle.initial_lng,
                             load.pickup_lat, load.pickup_lng
                         )
@@ -511,7 +589,7 @@ def print_summary(vehicles, avg_speed_kmh=60, active_vehicles_by_date=None, load
                 next_load = vehicle.loads[i + 1]
 
                 # Calculate distance from current dropoff to next pickup
-                unloaded_distance = haversine_distance(
+                unloaded_distance = get_route_distance(
                     current_load.dropoff_lat, current_load.dropoff_lng,
                     next_load.pickup_lat, next_load.pickup_lng
                 )
@@ -601,7 +679,7 @@ def calculate_month_statistics(vehicles, avg_speed_kmh=60, active_vehicles_by_da
             for i in range(len(vehicle.loads) - 1):
                 current_load = vehicle.loads[i]
                 next_load = vehicle.loads[i + 1]
-                unloaded_distance = haversine_distance(
+                unloaded_distance = get_route_distance(
                     current_load.dropoff_lat, current_load.dropoff_lng,
                     next_load.pickup_lat, next_load.pickup_lng
                 )
@@ -686,7 +764,7 @@ def calculate_month_statistics_by_vehicle_type(vehicles, avg_speed_kmh=60, activ
                 for i in range(len(vehicle.loads) - 1):
                     current_load = vehicle.loads[i]
                     next_load = vehicle.loads[i + 1]
-                    unloaded_distance = haversine_distance(
+                    unloaded_distance = get_route_distance(
                         current_load.dropoff_lat, current_load.dropoff_lng,
                         next_load.pickup_lat, next_load.pickup_lng
                     )
