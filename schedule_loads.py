@@ -215,7 +215,7 @@ class Vehicle:
         self.initial_lat = None
         self.initial_lng = None
 
-    def can_assign_load(self, load, avg_speed_kmh=60, active_vehicles_by_date=None):
+    def can_assign_load(self, load, avg_speed_kmh=60, active_vehicles_by_date=None, max_deadmile_km=0):
         """
         Check if a load can be assigned to this vehicle.
 
@@ -223,6 +223,7 @@ class Vehicle:
             load: Load object to check
             avg_speed_kmh: Average speed for travel time calculation
             active_vehicles_by_date: Dict mapping date -> set of active vehicle keys (optional)
+            max_deadmile_km: Maximum deadmile distance in km (0 = no limit)
 
         Returns:
             True if load can be assigned, False otherwise
@@ -238,6 +239,16 @@ class Vehicle:
         # If no loads assigned yet, check if vehicle can reach pickup from initial location
         if not self.loads:
             if self.initial_lat is not None and self.initial_lng is not None:
+                # Calculate deadmile distance from initial location to pickup
+                deadmile_distance = haversine_distance(
+                    self.initial_lat, self.initial_lng,
+                    load.pickup_lat, load.pickup_lng
+                )
+
+                # Check max deadmile constraint
+                if max_deadmile_km > 0 and deadmile_distance > max_deadmile_km:
+                    return False
+
                 # Calculate travel time from initial location to pickup
                 travel_time_hours = calculate_travel_time(
                     self.initial_lat, self.initial_lng,
@@ -252,6 +263,16 @@ class Vehicle:
 
         # Check if vehicle is available before pickup time
         if self.available_at > load.pickup_date:
+            return False
+
+        # Calculate deadmile distance from last dropoff to new pickup
+        deadmile_distance = haversine_distance(
+            self.current_lat, self.current_lng,
+            load.pickup_lat, load.pickup_lng
+        )
+
+        # Check max deadmile constraint
+        if max_deadmile_km > 0 and deadmile_distance > max_deadmile_km:
             return False
 
         # Calculate travel time from last dropoff to new pickup
@@ -286,7 +307,7 @@ class Vehicle:
 
 
 def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weight=0.3,
-                   active_vehicles_file='inputs/active_vehicles.csv', duration_tolerance_days=0.0):
+                   active_vehicles_file='inputs/active_vehicles.csv', duration_tolerance_days=0.0, max_deadmile_km=0):
     """
     Schedule loads across vehicles to maximize revenue and minimize deadmiles.
 
@@ -306,6 +327,7 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
                         Lower = more emphasis on revenue balance
         active_vehicles_file: Path to active vehicles CSV file
         duration_tolerance_days: Extra duration buffer in days (default 0.0)
+        max_deadmile_km: Maximum deadmile distance in km (0 = no limit, default 0)
 
     Returns:
         List of Vehicle objects with assigned loads
@@ -378,7 +400,7 @@ def schedule_loads(loads_df, num_vehicles=None, avg_speed_kmh=60, deadmile_weigh
     # Try to assign each load to a vehicle
     for load in loads:
         # Find all vehicles that can take this load
-        compatible_vehicles = [v for v in vehicles if v.can_assign_load(load, avg_speed_kmh, active_vehicles_by_date)]
+        compatible_vehicles = [v for v in vehicles if v.can_assign_load(load, avg_speed_kmh, active_vehicles_by_date, max_deadmile_km)]
 
         if compatible_vehicles:
             # Score each compatible vehicle based on:
@@ -696,7 +718,7 @@ def calculate_month_statistics_by_vehicle_type(vehicles, avg_speed_kmh=60, activ
 
 
 def process_single_month(loads_df, num_vehicles, avg_speed_kmh, output_file, deadmile_weight=0.3,
-                        active_vehicles_file='inputs/active_vehicles.csv', duration_tolerance_days=0.0):
+                        active_vehicles_file='inputs/active_vehicles.csv', duration_tolerance_days=0.0, max_deadmile_km=0):
     """
     Process a single month's loads.
 
@@ -708,6 +730,7 @@ def process_single_month(loads_df, num_vehicles, avg_speed_kmh, output_file, dea
         deadmile_weight: Weight for deadmile penalty (0-1)
         active_vehicles_file: Path to active vehicles CSV
         duration_tolerance_days: Extra duration buffer in days (default 0.0)
+        max_deadmile_km: Maximum deadmile distance in km (0 = no limit, default 0)
 
     Returns:
         Statistics dictionary
@@ -715,7 +738,7 @@ def process_single_month(loads_df, num_vehicles, avg_speed_kmh, output_file, dea
     # Load active vehicles data
     active_vehicles_by_date, _, _, _, _ = load_active_vehicles(active_vehicles_file)
 
-    vehicles = schedule_loads(loads_df, num_vehicles, avg_speed_kmh, deadmile_weight, active_vehicles_file, duration_tolerance_days)
+    vehicles = schedule_loads(loads_df, num_vehicles, avg_speed_kmh, deadmile_weight, active_vehicles_file, duration_tolerance_days, max_deadmile_km)
     generate_schedule_output(vehicles, output_file)
     return calculate_month_statistics(vehicles, avg_speed_kmh, active_vehicles_by_date, loads_df)
 
@@ -773,6 +796,12 @@ def main():
         type=float,
         default=0.0,
         help='Duration tolerance in days (default: 0.0). Adds extra buffer after each load dropoff.'
+    )
+    parser.add_argument(
+        '--max-deadmile-km',
+        type=float,
+        default=0.0,
+        help='Maximum deadmile distance in km (default: 0 = no limit). Vehicles will not be assigned loads requiring more than this distance of empty travel.'
     )
 
     args = parser.parse_args()
@@ -837,7 +866,7 @@ def main():
 
             # Process this month
             stats = process_single_month(month_df, args.num_vehicles, args.speed, output_file,
-                                        args.deadmile_weight, args.active_vehicles, args.duration_tolerance)
+                                        args.deadmile_weight, args.active_vehicles, args.duration_tolerance, args.max_deadmile_km)
             all_month_stats.append(stats)
 
             # Print this month's summary
@@ -882,7 +911,7 @@ def main():
         active_vehicles_by_date, _, _, _, _ = load_active_vehicles(args.active_vehicles)
 
         # Run scheduling algorithm
-        vehicles = schedule_loads(loads_df, args.num_vehicles, args.speed, args.deadmile_weight, args.active_vehicles, args.duration_tolerance)
+        vehicles = schedule_loads(loads_df, args.num_vehicles, args.speed, args.deadmile_weight, args.active_vehicles, args.duration_tolerance, args.max_deadmile_km)
 
         # Generate output
         print(f"Writing schedule to {args.output}...")

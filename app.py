@@ -753,12 +753,21 @@ def main():
             st.session_state['optimization_objective'] = optimization_objective
             st.session_state['optimization_objective_index'] = 0 if optimization_objective == "Revenue & Deadmiles" else 1
 
+        # Additional constraint row
+        col6, col7, col8 = st.columns(3)
+        with col6:
+            max_deadmile_km = st.slider("Max Deadmile Distance (km)", 0, 2000,
+                                       st.session_state.get('max_deadmile_km', 1000), 50,
+                                       help="Maximum kilometers a vehicle can travel unloaded to reach the next pickup. Set to 0 for no limit.")
+            st.session_state['max_deadmile_km'] = max_deadmile_km
+
         # Important notes
         st.info("""
         **📝 Important Notes:**
         - **Average Speed**: This parameter only affects the calculation of travel time between loads. It does not impact load durations or scheduling logic.
         - **Duration Tolerance**: Adds extra buffer time to each load's duration when calculating vehicle availability. This helps account for delays and ensures more realistic scheduling. The tolerance is added after the load's dropoff time.
         - **KM Tolerance Factor**: Multiplies all calculated kilometers (both loaded and deadmiles) to account for actual routes vs direct distance. For example, 1.25 means actual distance is 25% longer than straight-line distance.
+        - **Max Deadmile Distance**: Hard constraint on maximum unloaded travel distance. Vehicles will not be assigned loads that require traveling more than this distance empty. Set to 0 (or slide all the way left) to disable this constraint.
         - **GB (Revenue)**: GB values are net of additional fees and only reflect the selling price to the customer.
         """)
 
@@ -862,8 +871,9 @@ def main():
                     # Get optimization objective
                     # Run scheduler
                     duration_tolerance = st.session_state.get('duration_tolerance', 0.25)
+                    max_deadmile_km = st.session_state.get('max_deadmile_km', 1000)
                     vehicles = schedule_loads(
-                        month_df, None, avg_speed, deadmile_weight, vehicles_path, duration_tolerance
+                        month_df, None, avg_speed, deadmile_weight, vehicles_path, duration_tolerance, max_deadmile_km
                     )
 
                     # Store schedule
