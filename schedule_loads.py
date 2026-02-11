@@ -622,6 +622,79 @@ def calculate_month_statistics(vehicles, avg_speed_kmh=60, active_vehicles_by_da
     }
 
 
+def calculate_month_statistics_by_vehicle_type(vehicles, avg_speed_kmh=60, active_vehicles_by_date=None, loads_df=None):
+    """
+    Calculate statistics for a month's schedule broken down by vehicle type.
+
+    Args:
+        vehicles: List of Vehicle objects with assigned loads
+        avg_speed_kmh: Average speed for travel time calculation
+        active_vehicles_by_date: Dictionary mapping date -> set of active vehicle keys
+        loads_df: DataFrame with loads for this month (to determine date range)
+
+    Returns:
+        Dictionary with statistics by vehicle type, including 'total' and per-type stats
+    """
+    # Get overall stats first
+    overall_stats = calculate_month_statistics(vehicles, avg_speed_kmh, active_vehicles_by_date, loads_df)
+
+    # Group vehicles by type
+    vehicles_by_type = {}
+    for vehicle in vehicles:
+        vtype = vehicle.vehicle_type or 'Unknown'
+        if vtype not in vehicles_by_type:
+            vehicles_by_type[vtype] = []
+        vehicles_by_type[vtype].append(vehicle)
+
+    # Calculate stats for each vehicle type
+    stats_by_type = {'total': overall_stats}
+
+    for vtype, vtype_vehicles in vehicles_by_type.items():
+        total_revenue = sum(v.total_revenue for v in vtype_vehicles)
+        total_loads = sum(len(v.loads) for v in vtype_vehicles)
+
+        total_loaded_km = 0
+        total_unloaded_km = 0
+
+        for vehicle in vtype_vehicles:
+            if vehicle.loads:
+                for load in vehicle.loads:
+                    total_loaded_km += load.distance
+
+                for i in range(len(vehicle.loads) - 1):
+                    current_load = vehicle.loads[i]
+                    next_load = vehicle.loads[i + 1]
+                    unloaded_distance = haversine_distance(
+                        current_load.dropoff_lat, current_load.dropoff_lng,
+                        next_load.pickup_lat, next_load.pickup_lng
+                    )
+                    total_unloaded_km += unloaded_distance
+
+        total_km = total_loaded_km + total_unloaded_km
+
+        # Count vehicles with loads for this type
+        vehicles_with_loads = sum(1 for v in vtype_vehicles if len(v.loads) > 0)
+
+        # Count active vehicles of this type
+        num_vehicles_active = len(vtype_vehicles)
+
+        stats_by_type[vtype] = {
+            'vehicle_type': vtype,
+            'num_vehicles': num_vehicles_active,
+            'num_vehicles_used': vehicles_with_loads,
+            'num_loads': total_loads,
+            'total_loaded_km': total_loaded_km,
+            'total_unloaded_km': total_unloaded_km,
+            'total_km': total_km,
+            'loaded_ratio': (total_loaded_km / total_km * 100) if total_km > 0 else 0,
+            'total_revenue': total_revenue,
+            'revenue_per_vehicle': total_revenue / vehicles_with_loads if vehicles_with_loads > 0 else 0,
+            'avg_revenue_per_load': total_revenue / total_loads if total_loads > 0 else 0
+        }
+
+    return stats_by_type
+
+
 def process_single_month(loads_df, num_vehicles, avg_speed_kmh, output_file, deadmile_weight=0.3,
                         active_vehicles_file='inputs/active_vehicles.csv', duration_tolerance_days=0.0):
     """
