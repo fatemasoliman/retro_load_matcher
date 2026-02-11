@@ -168,7 +168,10 @@ def create_gantt_chart(schedule_df, month_name, avg_speed_kmh=60):
         if not vehicle_data_df.empty:
             vehicle_data = vehicle_data_df.iloc[0]
             license_plate = vehicle_data.get('license_plate', '')
-            origin_city = vehicle_data.get('pickup_city', 'N/A')  # First pickup city as origin
+            # Use initial_city from active_vehicles.csv (vehicle's location on first active day of month)
+            origin_city = vehicle_data.get('initial_city', 'N/A')
+            if not origin_city or pd.isna(origin_city):
+                origin_city = 'N/A'
             vehicle_info[vehicle_id] = (license_plate, origin_city)
         else:
             vehicle_info[vehicle_id] = ('', 'N/A')
@@ -663,17 +666,29 @@ def main():
 
         st.subheader("🔧 Scheduler Parameters")
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
             avg_speed = st.slider("Average Speed (km/h)", 30, 100,
-                                 st.session_state.get('avg_speed', 60), 5)
+                                 st.session_state.get('avg_speed', 40), 5)
             st.session_state['avg_speed'] = avg_speed
         with col2:
             deadmile_weight = st.slider("Deadmile Weight", 0.0, 1.0,
                                        st.session_state.get('deadmile_weight', 0.0), 0.05,
                                        help="Higher values prioritize reducing empty miles")
             st.session_state['deadmile_weight'] = deadmile_weight
+
+        col3, col4, col5 = st.columns(3)
         with col3:
+            duration_tolerance = st.slider("Duration Tolerance (days)", 0.0, 5.0,
+                                          st.session_state.get('duration_tolerance', 0.25), 0.25,
+                                          help="Extra buffer time added to each load duration for scheduling")
+            st.session_state['duration_tolerance'] = duration_tolerance
+        with col4:
+            km_tolerance = st.slider("KM Tolerance Factor", 1.0, 2.0,
+                                    st.session_state.get('km_tolerance', 1.25), 0.05,
+                                    help="Multiplier for kilometers to account for actual routes vs direct distance")
+            st.session_state['km_tolerance'] = km_tolerance
+        with col5:
             optimization_objective = st.selectbox(
                 "Optimization Objective",
                 ["Revenue & Deadmiles", "Price per Duration Day"],
@@ -682,6 +697,15 @@ def main():
             )
             st.session_state['optimization_objective'] = optimization_objective
             st.session_state['optimization_objective_index'] = 0 if optimization_objective == "Revenue & Deadmiles" else 1
+
+        # Important notes
+        st.info("""
+        **📝 Important Notes:**
+        - **Average Speed**: This parameter only affects the calculation of travel time between loads. It does not impact load durations or scheduling logic.
+        - **Duration Tolerance**: Adds extra buffer time to each load's duration when calculating vehicle availability. This helps account for delays and ensures more realistic scheduling. The tolerance is added after the load's dropoff time.
+        - **KM Tolerance Factor**: Multiplies all calculated kilometers (both loaded and deadmiles) to account for actual routes vs direct distance. For example, 1.25 means actual distance is 25% longer than straight-line distance.
+        - **GB (Revenue)**: GB values are net of additional fees and only reflect the selling price to the customer.
+        """)
 
         st.markdown("---")
 
@@ -781,11 +805,10 @@ def main():
                         month_df = loads_df[loads_df['month_temp'] == month].copy()
 
                     # Get optimization objective
-                    optimize_price_per_day = (st.session_state.get('optimization_objective', 'Revenue & Deadmiles') == 'Price per Duration Day')
-
                     # Run scheduler
+                    duration_tolerance = st.session_state.get('duration_tolerance', 0.25)
                     vehicles = schedule_loads(
-                        month_df, None, avg_speed, deadmile_weight, vehicles_path, optimize_price_per_day
+                        month_df, None, avg_speed, deadmile_weight, vehicles_path, duration_tolerance
                     )
 
                     # Store schedule
@@ -848,6 +871,7 @@ def main():
                                 'vehicle_key': vehicle.id,
                                 'vehicle_type': vehicle.vehicle_type,
                                 'license_plate': vehicle.license_plate,  # Keep plate as separate field
+                                'initial_city': vehicle.initial_city,  # Starting city from active_vehicles.csv
                                 'load_sequence': seq + 1,
                                 'load_key': load.key,
                                 'load_id': load.id,
@@ -871,7 +895,7 @@ def main():
                     all_schedules[month] = schedule_month_df
 
                     # Calculate stats based on actual vehicles in the schedule
-                    active_vehicles_by_date, _, _, _ = load_active_vehicles(vehicles_path)
+                    active_vehicles_by_date, _, _, _, _ = load_active_vehicles(vehicles_path)
                     stats_by_type = calculate_month_statistics_by_vehicle_type(
                         vehicles, avg_speed, active_vehicles_by_date, month_df
                     )
@@ -1412,6 +1436,9 @@ def main():
             # Calculate per-vehicle statistics across selected months
             st.subheader("🚛 Vehicle Statistics")
 
+            # Get KM tolerance factor from session state
+            km_tolerance = st.session_state.get('km_tolerance', 1.25)
+
             # Load active vehicles data for idle days calculation
             try:
                 active_vehicles_df = pd.read_csv('inputs/active_vehicles.csv')
@@ -1442,35 +1469,42 @@ def main():
                     # Merge load IDs into vehicle stats
                     vehicle_stats = vehicle_stats.merge(load_ids_by_vehicle, on='vehicle_id', how='left')
 
-                    # Calculate total kilometers and idle days per vehicle
+                    # Calculate total kilometers (loaded + deadmiles) and idle days per vehicle
                     for idx, row in vehicle_stats.iterrows():
                         vehicle_id = row['vehicle_id']
                         vehicle_loads = schedule_df_month[schedule_df_month['vehicle_id'] == vehicle_id].sort_values('load_sequence')
 
                         total_km = 0
+                        loaded_km = 0
+                        deadmile_km = 0
                         prev_dropoff_lat = None
                         prev_dropoff_lng = None
 
                         for _, load in vehicle_loads.iterrows():
-                            # Add travel distance if not first load
+                            # Add travel distance if not first load (deadmiles)
                             if prev_dropoff_lat is not None:
                                 travel_km = haversine_distance(
                                     prev_dropoff_lat, prev_dropoff_lng,
                                     load['pickup_lat'], load['pickup_lng']
                                 )
+                                deadmile_km += travel_km
                                 total_km += travel_km
 
-                            # Add load distance
+                            # Add load distance (loaded kilometers)
                             load_km = haversine_distance(
                                 load['pickup_lat'], load['pickup_lng'],
                                 load['dropoff_lat'], load['dropoff_lng']
                             )
+                            loaded_km += load_km
                             total_km += load_km
 
                             prev_dropoff_lat = load['dropoff_lat']
                             prev_dropoff_lng = load['dropoff_lng']
 
-                        vehicle_stats.at[idx, 'total_km'] = total_km
+                        # Apply KM tolerance factor to account for actual routes vs direct distance
+                        vehicle_stats.at[idx, 'total_km'] = total_km * km_tolerance
+                        vehicle_stats.at[idx, 'loaded_km'] = loaded_km * km_tolerance
+                        vehicle_stats.at[idx, 'deadmile_km'] = deadmile_km * km_tolerance
 
                         # Calculate idle days for this vehicle in this month
                         if active_vehicles_df is not None:
@@ -1522,6 +1556,10 @@ def main():
                 }
                 if 'idle_days' in combined_vehicle_stats.columns:
                     agg_dict['idle_days'] = 'sum'
+                if 'loaded_km' in combined_vehicle_stats.columns:
+                    agg_dict['loaded_km'] = 'sum'
+                if 'deadmile_km' in combined_vehicle_stats.columns:
+                    agg_dict['deadmile_km'] = 'sum'
 
                 final_vehicle_stats = combined_vehicle_stats.groupby('vehicle_id').agg(agg_dict).reset_index()
 
@@ -1532,25 +1570,36 @@ def main():
                     type_stats = final_vehicle_stats[final_vehicle_stats['vehicle_type'] == vehicle_type].copy()
 
                     # Reorder and rename columns
-                    columns_order = ['license_plate', 'vehicle_id', 'vehicle_key', 'revenue', 'load_id', 'load_ids', 'total_km']
+                    columns_order = ['license_plate', 'vehicle_id', 'vehicle_key', 'revenue', 'load_id', 'load_ids']
+                    column_names = ['Vehicle Plate', 'Vehicle Key', 'Vehicle ID', 'Total Revenue (SAR)', 'Number of Loads', 'Load IDs']
+
                     if 'idle_days' in type_stats.columns:
-                        columns_order.insert(-1, 'idle_days')  # Insert before total_km
+                        columns_order.append('idle_days')
+                        column_names.append('Idle Days')
+                    if 'loaded_km' in type_stats.columns:
+                        columns_order.append('loaded_km')
+                        column_names.append('Loaded KM')
+                    if 'deadmile_km' in type_stats.columns:
+                        columns_order.append('deadmile_km')
+                        column_names.append('Deadmile KM')
+                    columns_order.append('total_km')
+                    column_names.append('Total KM')
 
                     type_stats = type_stats[columns_order]
-
-                    column_names = ['Vehicle Plate', 'Vehicle Key', 'Vehicle ID', 'Total Revenue (SAR)', 'Number of Loads', 'Load IDs', 'Total Kilometers']
-                    if 'idle_days' in columns_order:
-                        column_names.insert(-1, 'Idle Days')
                     type_stats.columns = column_names
 
                     # Display as table
                     format_dict = {
                         'Total Revenue (SAR)': '{:,.0f}',
                         'Number of Loads': '{:.0f}',
-                        'Total Kilometers': '{:,.1f}'
+                        'Total KM': '{:,.1f}'
                     }
                     if 'Idle Days' in type_stats.columns:
                         format_dict['Idle Days'] = '{:.0f}'
+                    if 'Loaded KM' in type_stats.columns:
+                        format_dict['Loaded KM'] = '{:,.1f}'
+                    if 'Deadmile KM' in type_stats.columns:
+                        format_dict['Deadmile KM'] = '{:,.1f}'
 
                     st.dataframe(
                         type_stats.style.format(format_dict),
@@ -1746,7 +1795,7 @@ def main():
                         for vehicle_type, fig in figures.items():
                             st.plotly_chart(fig, width='stretch')
 
-                    # Status breakdown chart
+                    # Status breakdown chart by vehicle type
                     st.subheader(f"📊 Loads by Status - {month}")
 
                     # Create rental category column
@@ -1759,9 +1808,6 @@ def main():
                         lambda x: 'COMPLETED' if x == 'COMPLETED' else x
                     )
 
-                    # Count loads by status and rental
-                    status_rental_counts = schedule_df.groupby(['display_status', 'rental_category']).size().reset_index(name='Count')
-
                     # Sort: COMPLETED first, then other statuses alphabetically
                     def status_sort_key(status):
                         if status == 'COMPLETED':
@@ -1769,32 +1815,46 @@ def main():
                         else:
                             return (1, status)
 
-                    status_rental_counts['sort_key'] = status_rental_counts['display_status'].apply(status_sort_key)
-                    status_rental_counts = status_rental_counts.sort_values('sort_key')
+                    # Get unique vehicle types
+                    vehicle_types = sorted(schedule_df['vehicle_type'].dropna().unique())
 
-                    # Create stacked bar chart
-                    fig_status = px.bar(
-                        status_rental_counts,
-                        x='display_status',
-                        y='Count',
-                        color='rental_category',
-                        title=f'Number of Assigned Loads by Status - {month}',
-                        text='Count',
-                        color_discrete_map={'Rental': '#3498db', 'Non-Rental': '#ffcdd2'},  # Dark blue for Rental, Light red for Non-Rental
-                        barmode='stack'
-                    )
+                    # Create a chart for each vehicle type
+                    for vehicle_type in vehicle_types:
+                        st.markdown(f"#### {vehicle_type}")
 
-                    fig_status.update_traces(textposition='inside', textfont_size=12)
-                    fig_status.update_layout(
-                        xaxis_title='Status',
-                        yaxis_title='Number of Loads',
-                        legend_title='Type',
-                        height=400
-                    )
+                        type_df = schedule_df[schedule_df['vehicle_type'] == vehicle_type]
 
-                    st.plotly_chart(fig_status, width='stretch')
+                        # Count loads by status and rental
+                        status_rental_counts = type_df.groupby(['display_status', 'rental_category']).size().reset_index(name='Count')
 
-                    # Show status summary metrics
+                        status_rental_counts['sort_key'] = status_rental_counts['display_status'].apply(status_sort_key)
+                        status_rental_counts = status_rental_counts.sort_values('sort_key')
+
+                        # Create stacked bar chart
+                        fig_status = px.bar(
+                            status_rental_counts,
+                            x='display_status',
+                            y='Count',
+                            color='rental_category',
+                            title=f'{vehicle_type} - Loads by Status',
+                            text='Count',
+                            color_discrete_map={'Rental': '#3498db', 'Non-Rental': '#ffcdd2'},  # Dark blue for Rental, Light red for Non-Rental
+                            barmode='stack'
+                        )
+
+                        fig_status.update_traces(textposition='inside', textfont_size=12)
+                        fig_status.update_layout(
+                            xaxis_title='Status',
+                            yaxis_title='Number of Loads',
+                            legend_title='Type',
+                            height=400
+                        )
+
+                        st.plotly_chart(fig_status, use_container_width=True)
+
+                    # Show overall status summary metrics
+                    st.markdown("---")
+                    st.markdown("#### Overall Summary")
                     col1, col2, col3 = st.columns(3)
                     total_loads = len(schedule_df)
 

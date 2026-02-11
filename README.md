@@ -14,6 +14,18 @@ A Python script that optimizes load scheduling across multiple vehicles to maxim
 - **Visual Gantt Charts**: Generate timeline visualizations of your schedule
 - **Multi-Month Processing**: Process all months separately with comprehensive statistics
 
+## Important Note
+
+**This is a naive greedy algorithm designed exclusively for retrospective financial analysis.** The purpose is to gauge the potential impact of optimized load matching based on existing historical demand, not to provide production-ready scheduling for real-time operations.
+
+The algorithm:
+- Uses a simple greedy approach that may not find the global optimum
+- Does not account for many real-world constraints (driver hours, load compatibility, vehicle capacity, regulatory requirements, customer preferences, etc.)
+- Is intended solely to estimate financial opportunity from better load matching
+- Should not be used for actual operational scheduling without significant enhancements
+
+This tool helps answer the question: "Given the loads we had, how much revenue could we have captured with better matching?" It provides an upper bound estimate for retrospective analysis and decision-making.
+
 ## Requirements
 
 - Python 3.8+
