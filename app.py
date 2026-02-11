@@ -922,7 +922,12 @@ def main():
                         # The stats calculation already accurately counts vehicles with loads
                         # Overriding here can cause mismatches if vehicle_ids are missing/duplicate
 
-                    all_stats.extend(stats_by_type)
+                    # Convert stats_by_type dictionary to list of records
+                    for key, stats in stats_by_type.items():
+                        if key != 'total':  # Skip total, we'll handle per-type stats
+                            stats_record = stats.copy()
+                            stats_record['month'] = month_normalized
+                            all_stats.append(stats_record)
 
                     progress_bar.progress((i + 1) / len(sorted_months))
 
@@ -1897,6 +1902,10 @@ def main():
 
                 if actuals_df is None:
                     raise FileNotFoundError("No actuals data available")
+
+                # Drop the original 'month' column if it exists (to avoid conflicts)
+                if 'month' in actuals_df.columns and 'month_name' in actuals_df.columns:
+                    actuals_df = actuals_df.drop(columns=['month'])
 
                 # Rename columns for compatibility with comparison chart
                 actuals_df = actuals_df.rename(columns={
