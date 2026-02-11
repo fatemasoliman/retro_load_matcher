@@ -32,6 +32,35 @@ This tool helps answer the question: "Given the loads we had, how much revenue c
 - pandas
 - numpy
 - matplotlib (for visualization)
+- requests (for API calls)
+- python-dotenv (for environment variables)
+
+## OpenRouteService Integration
+
+The scheduler uses **actual road distances** from OpenRouteService API instead of straight-line (haversine) distances for more accurate routing calculations.
+
+### Setup
+
+1. Get a free API key from [OpenRouteService](https://openrouteservice.org/dev/#/signup)
+2. Create a `.env` file in the project root (see `.env.example`)
+3. Add your API key:
+   ```
+   OPENROUTESERVICE_API_KEY=your_api_key_here
+   ```
+
+### Features
+
+- **Automatic Fallback**: If the API is unavailable or rate-limited, the system automatically falls back to haversine distance calculations
+- **Caching**: Distance calculations are cached to minimize API calls and improve performance
+- **Transparent**: The system logs when it's using the API vs fallback, so you can monitor usage
+- **No Interruption**: Rate limiting or API errors won't stop the scheduler - it seamlessly switches to haversine
+
+### Benefits
+
+- More accurate travel distances using actual road networks
+- Better scheduling decisions based on real-world routing
+- Accounts for one-way streets, road conditions, and actual drivable routes
+- Improved deadmile calculations for cost estimation
 
 ## Installation
 
