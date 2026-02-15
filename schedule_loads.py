@@ -33,6 +33,18 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     Returns:
         Distance in kilometers
     """
+    # Validate coordinates
+    import math
+    try:
+        lat1, lon1, lat2, lon2 = float(lat1), float(lon1), float(lat2), float(lon2)
+
+        # Check if any are NaN or infinite
+        if any(math.isnan(x) or math.isinf(x) for x in [lat1, lon1, lat2, lon2]):
+            return 0  # Return 0 for invalid coordinates
+
+    except (ValueError, TypeError):
+        return 0  # Return 0 for invalid coordinates
+
     # Convert decimal degrees to radians
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
 
@@ -60,6 +72,26 @@ def get_route_distance(lat1, lon1, lat2, lon2):
     Returns:
         Distance in kilometers (actual road distance)
     """
+    # Validate coordinates - check for NaN, infinity, or invalid values
+    try:
+        lat1, lon1, lat2, lon2 = float(lat1), float(lon1), float(lat2), float(lon2)
+
+        # Check if any are NaN or infinite
+        import math
+        if any(math.isnan(x) or math.isinf(x) for x in [lat1, lon1, lat2, lon2]):
+            # Invalid coordinates, fall back to haversine
+            return haversine_distance(lat1, lon1, lat2, lon2)
+
+        # Check if coordinates are in valid ranges
+        if not (-90 <= lat1 <= 90 and -90 <= lat2 <= 90):
+            return haversine_distance(lat1, lon1, lat2, lon2)
+        if not (-180 <= lon1 <= 180 and -180 <= lon2 <= 180):
+            return haversine_distance(lat1, lon1, lat2, lon2)
+
+    except (ValueError, TypeError):
+        # Cannot convert to float, fallback
+        return 0  # Return 0 for completely invalid coordinates
+
     # Create cache key
     cache_key = (round(lat1, 6), round(lon1, 6), round(lat2, 6), round(lon2, 6))
 
